@@ -193,7 +193,10 @@ class KubernetesJobManager(JobManager):
                 "template": {
                     "metadata": {
                         "name": backend_job_id,
-                        "labels": {"reana-run-job-workflow-uuid": self.workflow_uuid},
+                        "labels": {
+                            "reana-run-job-workflow-uuid": self.workflow_uuid,
+                            "user-uuid": REANA_USER_ID,
+                        },
                     },
                     "spec": {
                         "automountServiceAccountToken": False,
