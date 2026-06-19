@@ -19,6 +19,7 @@ from kubernetes.client.rest import ApiException
 from reana_commons.config import (
     K8S_CERN_EOS_AVAILABLE,
     K8S_CERN_EOS_MOUNT_CONFIGURATION,
+    K8S_USE_SECURITY_CONTEXT,
     KRB5_STATUS_FILE_LOCATION,
     REANA_JOB_HOSTPATH_MOUNTS,
     REANA_RUNTIME_KUBERNETES_NAMESPACE,
@@ -70,6 +71,70 @@ from reana_job_controller.config import (
 )
 from reana_job_controller.errors import ComputingBackendSubmissionError
 from reana_job_controller.job_manager import JobManager
+
+
+def _restricted_container_security_context(
+    kubernetes_uid: Optional[int] = None,
+    kubernetes_gid: int = WORKFLOW_RUNTIME_USER_GID,
+) -> dict:
+    """Return a PSA-restricted container security context."""
+    security_context = {
+        "runAsNonRoot": True,
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+    if kubernetes_uid is not None:
+        security_context["runAsUser"] = int(kubernetes_uid)
+        security_context["runAsGroup"] = int(kubernetes_gid)
+    return security_context
+
+
+def _normalize_kerberos_container_security_context(
+    kerberos_config, kubernetes_uid: int
+):
+    """Backfill missing Kerberos security-context fields from older commons releases."""
+    if not K8S_USE_SECURITY_CONTEXT:
+        return kerberos_config
+
+    for container_name in ("init_container", "renew_container"):
+        container = getattr(kerberos_config, container_name, None)
+        if not container:
+            continue
+
+        expected_security_context = _restricted_container_security_context(
+            kubernetes_uid
+        )
+        if "securityContext" not in container:
+            container["securityContext"] = expected_security_context
+            continue
+
+        for field, value in expected_security_context.items():
+            if field not in container["securityContext"]:
+                container["securityContext"][field] = value
+
+    return kerberos_config
+
+
+def _get_compatible_kerberos_k8s_config(secrets, kubernetes_uid: int):
+    """Return Kerberos k8s config across released and unreleased commons APIs."""
+    try:
+        kerberos_config = get_kerberos_k8s_config(
+            secrets,
+            kubernetes_uid=kubernetes_uid,
+            use_security_context=K8S_USE_SECURITY_CONTEXT,
+        )
+    except TypeError as exc:
+        if "unexpected keyword argument 'use_security_context'" not in str(exc):
+            raise
+        kerberos_config = get_kerberos_k8s_config(
+            secrets,
+            kubernetes_uid=kubernetes_uid,
+        )
+    return _normalize_kerberos_container_security_context(
+        kerberos_config,
+        kubernetes_uid,
+    )
 
 
 class KubernetesJobManager(JobManager):
@@ -209,8 +274,8 @@ class KubernetesJobManager(JobManager):
                                 "args": [self.cmd],
                                 "name": "job",
                                 "env": [],
-                                "volumeMounts": [],
                                 "securityContext": {"allowPrivilegeEscalation": False},
+                                "volumeMounts": [],
                             }
                         ],
                         "initContainers": [],
@@ -223,6 +288,10 @@ class KubernetesJobManager(JobManager):
                 },
             },
         }
+        if K8S_USE_SECURITY_CONTEXT:
+            self.job["spec"]["template"]["spec"]["containers"][0][
+                "securityContext"
+            ] = _restricted_container_security_context()
 
         secret_env_vars = self.secrets.get_env_secrets_as_k8s_spec()
         job_spec = self.job["spec"]["template"]["spec"]
@@ -250,13 +319,14 @@ class KubernetesJobManager(JobManager):
             job_spec["containers"][0]["volumeMounts"].extend(volume_mounts)
             job_spec["volumes"].extend(volumes)
 
-        self.job["spec"]["template"]["spec"]["securityContext"] = (
-            client.V1PodSecurityContext(
-                run_as_group=WORKFLOW_RUNTIME_USER_GID,
-                run_as_user=self.kubernetes_uid,
-                run_as_non_root=True,
+        if K8S_USE_SECURITY_CONTEXT:
+            self.job["spec"]["template"]["spec"]["securityContext"] = (
+                client.V1PodSecurityContext(
+                    run_as_group=int(WORKFLOW_RUNTIME_USER_GID),
+                    run_as_user=int(self.kubernetes_uid),
+                    run_as_non_root=True,
+                )
             )
-        )
 
         if self.kerberos:
             self._add_krb5_containers(self.secrets)
@@ -537,7 +607,7 @@ class KubernetesJobManager(JobManager):
 
     def _add_krb5_containers(self, secrets):
         """Add krb5 init and renew containers for a job."""
-        krb5_config = get_kerberos_k8s_config(
+        krb5_config = _get_compatible_kerberos_k8s_config(
             secrets,
             kubernetes_uid=self.kubernetes_uid,
         )
@@ -596,11 +666,9 @@ class KubernetesJobManager(JobManager):
                         echo "[ERROR] VOMSPROXY_FILE {voms_proxy_user_file} does not exist in user secrets."; \
                         exit; \
                      fi; \
-                     cp /etc/reana/secrets/{voms_proxy_user_file} {voms_proxy_file_path}; \
-                     chown {kubernetes_uid} {voms_proxy_file_path}'.format(
+                     cp /etc/reana/secrets/{voms_proxy_user_file} {voms_proxy_file_path}'.format(
                         voms_proxy_user_file=voms_proxy_user_file,
                         voms_proxy_file_path=voms_proxy_file_path,
-                        kubernetes_uid=self.kubernetes_uid,
                     ),
                 ],
                 "name": current_app.config["VOMSPROXY_CONTAINER_NAME"],
@@ -608,6 +676,10 @@ class KubernetesJobManager(JobManager):
                 "volumeMounts": [secrets_volume_mount] + volume_mounts,
                 "env": secret_env_vars,
             }
+            if K8S_USE_SECURITY_CONTEXT:
+                voms_proxy_container["securityContext"] = (
+                    _restricted_container_security_context(self.kubernetes_uid)
+                )
         else:
             # single-user deployment mode, where we generate VOMS proxy file in the sidecar from user secrets
             voms_proxy_container = {
@@ -636,11 +708,9 @@ class KubernetesJobManager(JobManager):
                          echo $VOMSPROXY_PASS | base64 -d | voms-proxy-init \
                          --voms {voms_proxy_vo} --key /tmp/userkey.pem \
                          --cert $(readlink -f /etc/reana/secrets/usercert.pem) \
-                         --pwstdin --out {voms_proxy_file_path}; \
-                         chown {kubernetes_uid} {voms_proxy_file_path}'.format(
+                         --pwstdin --out {voms_proxy_file_path}'.format(
                         voms_proxy_vo=voms_proxy_vo.lower(),
                         voms_proxy_file_path=voms_proxy_file_path,
-                        kubernetes_uid=self.kubernetes_uid,
                     ),
                 ],
                 "name": current_app.config["VOMSPROXY_CONTAINER_NAME"],
@@ -648,6 +718,10 @@ class KubernetesJobManager(JobManager):
                 "volumeMounts": [secrets_volume_mount] + volume_mounts,
                 "env": secret_env_vars,
             }
+            if K8S_USE_SECURITY_CONTEXT:
+                voms_proxy_container["securityContext"] = (
+                    _restricted_container_security_context(self.kubernetes_uid)
+                )
 
         self.job["spec"]["template"]["spec"]["volumes"].extend([ticket_cache_volume])
         self.job["spec"]["template"]["spec"]["containers"][0]["volumeMounts"].extend(
@@ -731,6 +805,10 @@ class KubernetesJobManager(JobManager):
             "volumeMounts": [secrets_volume_mount] + volume_mounts,
             "env": secret_env_vars,
         }
+        if K8S_USE_SECURITY_CONTEXT:
+            rucio_config_container["securityContext"] = (
+                _restricted_container_security_context(self.kubernetes_uid)
+            )
 
         self.job["spec"]["template"]["spec"]["volumes"].extend([ticket_cache_volume])
         self.job["spec"]["template"]["spec"]["containers"][0]["volumeMounts"].extend(
@@ -748,17 +826,18 @@ class KubernetesJobManager(JobManager):
     def set_user_id(self, kubernetes_uid):
         """Set UID for job pods.
 
-        UIDs below the cluster-configured minimum
-        (``REANA_KUBERNETES_JOBS_MIN_USER_UID``) are refused for security.
+        UIDs below the cluster-configured minimum are refused for security.
         """
         if kubernetes_uid is None:
-            self.kubernetes_uid = WORKFLOW_RUNTIME_USER_UID
+            self.kubernetes_uid = int(WORKFLOW_RUNTIME_USER_UID)
             return
-        if kubernetes_uid < REANA_KUBERNETES_JOBS_MIN_USER_UID:
+
+        kubernetes_uid = int(kubernetes_uid)
+        min_user_uid = int(REANA_KUBERNETES_JOBS_MIN_USER_UID)
+        if kubernetes_uid < min_user_uid:
             msg = (
                 f'The "kubernetes_uid" requested ({kubernetes_uid}) is below '
-                f"the cluster-configured minimum "
-                f"({REANA_KUBERNETES_JOBS_MIN_USER_UID})."
+                f"the minimum allowed UID ({min_user_uid})."
             )
             raise REANAKubernetesUIDBelowMinimum(msg)
         self.kubernetes_uid = kubernetes_uid

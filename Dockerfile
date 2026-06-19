@@ -25,6 +25,7 @@ RUN apt-get update -y && \
     apt-get install --no-install-recommends -y \
       git \
       gcc \
+      libnss-wrapper \
       krb5-config \
       krb5-user \
       libauthen-krb5-simple-perl \
@@ -84,6 +85,22 @@ COPY etc/job_wrapper.sh /etc/job_wrapper.sh
 RUN chmod +x /etc/job_wrapper.sh && \
     update-ca-certificates
 
+# Resolve libnss_wrapper at build time and prepare runtime directories
+RUN LIBNSS_WRAPPER_PATH="" && \
+    for candidate in $(dpkg -L libnss-wrapper); do \
+      case "${candidate}" in \
+        */libnss_wrapper.so) \
+          LIBNSS_WRAPPER_PATH="${candidate}"; \
+          break; \
+          ;; \
+      esac; \
+    done && \
+    test -n "${LIBNSS_WRAPPER_PATH}" && \
+    mkdir -p /usr/local/lib /var/run/nss_wrapper && \
+    ln -sf "${LIBNSS_WRAPPER_PATH}" /usr/local/lib/libnss_wrapper.so && \
+    chown -R 1000:0 /var/run/nss_wrapper && \
+    chmod -R g+rwx /var/run/nss_wrapper
+
 # Copy cluster component source code
 WORKDIR /code
 COPY . /code
@@ -132,17 +149,30 @@ RUN pip check
 # Set useful environment variables
 ENV COMPUTE_BACKENDS=$COMPUTE_BACKENDS \
     FLASK_APP=reana_job_controller/app.py \
+    K8S_USE_SECURITY_CONTEXT=True \
+    LIBNSS_WRAPPER_PATH=/usr/local/lib/libnss_wrapper.so \
+    NSS_WRAPPER_GROUP=/var/run/nss_wrapper/group \
+    NSS_WRAPPER_PASSWD=/var/run/nss_wrapper/passwd \
     TERM=xterm
 
-# Delete default `ubuntu` user, as its UID (1000) clashes with REANA's default one
-# See https://bugs.launchpad.net/cloud-images/+bug/2005129
-RUN userdel -r ubuntu
+# Default caches and HTCondor runtime files live under /tmp so the
+# OpenShift-style arbitrary UID/GID path remains writable too.
+ENV HOME=/tmp/reana-job-controller \
+    TMPDIR=/tmp \
+    WORKFLOW_RUNTIME_GROUP_NAME=root \
+    WORKFLOW_RUNTIME_USER_GID=0 \
+    WORKFLOW_RUNTIME_USER_NAME=reana \
+    WORKFLOW_RUNTIME_USER_UID=1000 \
+    XDG_CACHE_HOME=/tmp/reana-job-controller/.cache
 
 # Expose ports to clients
 EXPOSE 5000
 
-# Run server (in a full REANA deployment, this is overridden at runtime by reana-workflow-controller)
-CMD ["flask", "run", "-h", "0.0.0.0"]
+# Run server. In a full REANA deployment the wrapper is still invoked via
+# reana-workflow-controller, but the wrapper itself decides between uwsgi and
+# the Flask development server depending on runtime context.
+USER 1000:0
+CMD ["python3", "-m", "reana_job_controller.nss_wrapper"]
 
 # Set image labels
 LABEL org.opencontainers.image.authors="team@reanahub.io"

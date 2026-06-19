@@ -8,17 +8,20 @@
 
 """REANA-Job-Controller Job Manager tests."""
 
+import base64
 import json
 import uuid
+from types import SimpleNamespace
 
 import mock
 import pytest
-from reana_db.models import Job, JobStatus
 from reana_commons.config import (
     KRB5_INIT_CONTAINER_NAME,
     KRB5_RENEW_CONTAINER_NAME,
+    WORKFLOW_RUNTIME_USER_GID,
     WORKFLOW_RUNTIME_USER_UID,
 )
+from reana_db.models import Job, JobStatus
 from reana_commons.errors import (
     REANAKubernetesCPULimitExceeded,
     REANAKubernetesWrongCPUFormat,
@@ -27,7 +30,18 @@ from reana_commons.errors import (
     REANAKubernetesWrongMemoryFormat,
 )
 from reana_job_controller.job_manager import JobManager
-from reana_job_controller.kubernetes_job_manager import KubernetesJobManager
+from reana_job_controller.kubernetes_job_manager import (
+    KubernetesJobManager,
+    _get_compatible_kerberos_k8s_config,
+)
+
+
+def _build_user_secret(value, secret_type):
+    """Build a mock Kubernetes user secret entry."""
+    return {
+        "value": base64.b64encode(value.encode()).decode(),
+        "type": secret_type,
+    }
 
 
 @pytest.mark.parametrize("kerberos", [False, True])
@@ -85,22 +99,252 @@ def test_execute_kubernetes_job(
             env_vars = containers[0]["env"]
             image = containers[0]["image"]
             command = containers[0]["args"]
+            container_security_context = containers[0]["securityContext"]
+            security_context = body["spec"]["template"]["spec"]["securityContext"]
             assert {"name": env_var_key, "value": env_var_value} in env_vars
             assert image == expected_image
+            assert security_context.run_as_user == int(WORKFLOW_RUNTIME_USER_UID)
+            assert security_context.run_as_group == int(WORKFLOW_RUNTIME_USER_GID)
+            assert container_security_context["runAsNonRoot"] is True
+            assert container_security_context["allowPrivilegeEscalation"] is False
+            assert container_security_context["capabilities"] == {"drop": ["ALL"]}
+            assert container_security_context["seccompProfile"] == {
+                "type": "RuntimeDefault"
+            }
             if kerberos:
                 assert len(containers) == 2  # main job + sidecar
                 assert len(init_containers) == 1
                 assert init_containers[0]["name"] == KRB5_INIT_CONTAINER_NAME
+                assert init_containers[0]["securityContext"] == {
+                    "runAsGroup": int(WORKFLOW_RUNTIME_USER_GID),
+                    "runAsUser": int(WORKFLOW_RUNTIME_USER_UID),
+                    "runAsNonRoot": True,
+                    "allowPrivilegeEscalation": False,
+                    "capabilities": {"drop": ["ALL"]},
+                    "seccompProfile": {"type": "RuntimeDefault"},
+                }
                 assert len(env_vars) == 7  # KRB5CCNAME is added
                 assert "trap" in command[0] and expected_command in command[0]
                 assert "kinit -R" in containers[1]["args"][0]
                 assert containers[1]["name"] == KRB5_RENEW_CONTAINER_NAME
+                assert containers[1]["securityContext"] == {
+                    "runAsGroup": int(WORKFLOW_RUNTIME_USER_GID),
+                    "runAsUser": int(WORKFLOW_RUNTIME_USER_UID),
+                    "runAsNonRoot": True,
+                    "allowPrivilegeEscalation": False,
+                    "capabilities": {"drop": ["ALL"]},
+                    "seccompProfile": {"type": "RuntimeDefault"},
+                }
             else:
                 assert len(containers) == 1
                 assert len(init_containers) == 0
                 # custom env + REANA_WORKSPACE + REANA_WORKFLOW_UUID + DASK_SCHEDULER_URI + two secrets
                 assert len(env_vars) == 6
                 assert command == [expected_command]
+
+
+def test_execute_kubernetes_job_with_voms_proxy_init_container(
+    app,
+    session,
+    sample_serial_workflow_in_db,
+    sample_workflow_workspace,
+    user0,
+    corev1_api_client_with_user_secrets,
+    monkeypatch,
+):
+    """Test that the VOMS init container is PSA-restricted."""
+    workflow_uuid = sample_serial_workflow_in_db.id_
+    workflow_workspace = next(sample_workflow_workspace(str(workflow_uuid)))
+    voms_user_secrets = {
+        "VOMSPROXY_FILE": _build_user_secret("proxy.pem", "env"),
+        "proxy.pem": _build_user_secret("proxy data", "file"),
+    }
+    monkeypatch.setenv("REANA_USER_ID", str(user0.id_))
+    job_manager = KubernetesJobManager(
+        docker_img="docker.io/library/busybox",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid=workflow_uuid,
+        workflow_workspace=workflow_workspace,
+        voms_proxy=True,
+    )
+
+    with mock.patch(
+        "reana_job_controller.kubernetes_job_manager.current_k8s_batchv1_api_client"
+    ) as kubernetes_client:
+        with mock.patch(
+            "reana_commons.k8s.secrets.current_k8s_corev1_api_client",
+            corev1_api_client_with_user_secrets(voms_user_secrets),
+        ):
+            job_manager.execute()
+            body = kubernetes_client.create_namespaced_job.call_args[1]["body"]
+            init_container = body["spec"]["template"]["spec"]["initContainers"][0]
+
+            assert init_container["name"] == app.config["VOMSPROXY_CONTAINER_NAME"]
+            assert init_container["securityContext"] == {
+                "runAsUser": int(WORKFLOW_RUNTIME_USER_UID),
+                "runAsGroup": int(WORKFLOW_RUNTIME_USER_GID),
+                "runAsNonRoot": True,
+                "allowPrivilegeEscalation": False,
+                "capabilities": {"drop": ["ALL"]},
+                "seccompProfile": {"type": "RuntimeDefault"},
+            }
+
+
+def test_execute_kubernetes_job_with_rucio_init_container(
+    app,
+    session,
+    sample_serial_workflow_in_db,
+    sample_workflow_workspace,
+    user0,
+    corev1_api_client_with_user_secrets,
+    monkeypatch,
+):
+    """Test that the Rucio init container is PSA-restricted."""
+    workflow_uuid = sample_serial_workflow_in_db.id_
+    workflow_workspace = next(sample_workflow_workspace(str(workflow_uuid)))
+    rucio_user_secrets = {
+        "VONAME": _build_user_secret("atlas", "env"),
+        "RUCIO_USERNAME": _build_user_secret("johndoe", "env"),
+    }
+    monkeypatch.setenv("REANA_USER_ID", str(user0.id_))
+    job_manager = KubernetesJobManager(
+        docker_img="docker.io/library/busybox",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid=workflow_uuid,
+        workflow_workspace=workflow_workspace,
+        rucio=True,
+    )
+
+    with mock.patch(
+        "reana_job_controller.kubernetes_job_manager.current_k8s_batchv1_api_client"
+    ) as kubernetes_client:
+        with mock.patch(
+            "reana_commons.k8s.secrets.current_k8s_corev1_api_client",
+            corev1_api_client_with_user_secrets(rucio_user_secrets),
+        ):
+            job_manager.execute()
+            body = kubernetes_client.create_namespaced_job.call_args[1]["body"]
+            init_container = body["spec"]["template"]["spec"]["initContainers"][0]
+
+            assert init_container["name"] == app.config["RUCIO_CONTAINER_NAME"]
+            assert init_container["securityContext"] == {
+                "runAsUser": int(WORKFLOW_RUNTIME_USER_UID),
+                "runAsGroup": int(WORKFLOW_RUNTIME_USER_GID),
+                "runAsNonRoot": True,
+                "allowPrivilegeEscalation": False,
+                "capabilities": {"drop": ["ALL"]},
+                "seccompProfile": {"type": "RuntimeDefault"},
+            }
+
+
+def test_execute_kubernetes_job_keeps_minimal_container_security_context_when_disabled(
+    app,
+    session,
+    sample_serial_workflow_in_db,
+    sample_workflow_workspace,
+    empty_user_secrets,
+    user0,
+    corev1_api_client_with_user_secrets,
+    monkeypatch,
+):
+    """Test that disabled security contexts still keep no-new-privileges on jobs."""
+    workflow_uuid = sample_serial_workflow_in_db.id_
+    workflow_workspace = next(sample_workflow_workspace(str(workflow_uuid)))
+    monkeypatch.setenv("REANA_USER_ID", str(user0.id_))
+    monkeypatch.setattr(
+        "reana_job_controller.kubernetes_job_manager.K8S_USE_SECURITY_CONTEXT",
+        False,
+    )
+    job_manager = KubernetesJobManager(
+        docker_img="docker.io/library/busybox",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid=workflow_uuid,
+        workflow_workspace=workflow_workspace,
+    )
+
+    with mock.patch(
+        "reana_job_controller.kubernetes_job_manager.current_k8s_batchv1_api_client"
+    ) as kubernetes_client:
+        with mock.patch(
+            "reana_commons.k8s.secrets.current_k8s_corev1_api_client",
+            corev1_api_client_with_user_secrets(empty_user_secrets),
+        ):
+            job_manager.execute()
+            body = kubernetes_client.create_namespaced_job.call_args[1]["body"]
+            job_spec = body["spec"]["template"]["spec"]
+
+            assert "securityContext" not in job_spec
+            assert job_spec["containers"][0]["securityContext"] == {
+                "allowPrivilegeEscalation": False
+            }
+
+
+def test_get_compatible_kerberos_k8s_config_supports_old_commons_api(monkeypatch):
+    """Retry Kerberos config calls without the new optional kwarg when needed."""
+    calls = []
+
+    def old_get_kerberos_k8s_config(secrets, kubernetes_uid):
+        calls.append((secrets, kubernetes_uid))
+        return "kerberos-config"
+
+    monkeypatch.setattr(
+        "reana_job_controller.kubernetes_job_manager.get_kerberos_k8s_config",
+        old_get_kerberos_k8s_config,
+    )
+
+    kerberos_config = _get_compatible_kerberos_k8s_config("secrets", 1000)
+
+    assert kerberos_config == "kerberos-config"
+    assert calls == [("secrets", 1000)]
+
+
+def test_get_compatible_kerberos_k8s_config_backfills_partial_security_context(
+    monkeypatch,
+):
+    """Backfill missing PSA fields from released commons Kerberos specs."""
+
+    def partially_hardened_get_kerberos_k8s_config(
+        secrets, kubernetes_uid, use_security_context=True
+    ):
+        return SimpleNamespace(
+            init_container={
+                "securityContext": {
+                    "runAsUser": int(kubernetes_uid),
+                    "runAsNonRoot": True,
+                }
+            },
+            renew_container={
+                "securityContext": {
+                    "runAsUser": int(kubernetes_uid),
+                    "runAsNonRoot": True,
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        "reana_job_controller.kubernetes_job_manager.get_kerberos_k8s_config",
+        partially_hardened_get_kerberos_k8s_config,
+    )
+
+    kerberos_config = _get_compatible_kerberos_k8s_config("secrets", 1000)
+
+    expected_security_context = {
+        "runAsGroup": int(WORKFLOW_RUNTIME_USER_GID),
+        "runAsUser": int(WORKFLOW_RUNTIME_USER_UID),
+        "runAsNonRoot": True,
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+    assert (
+        kerberos_config.init_container["securityContext"] == expected_security_context
+    )
+    assert (
+        kerberos_config.renew_container["securityContext"] == expected_security_context
+    )
 
 
 def test_stop_kubernetes_job(
@@ -382,6 +626,7 @@ def test_set_memory_limit(
         (None, 100, False, WORKFLOW_RUNTIME_USER_UID),  # No UID: default.
         (50, 100, True, None),  # Below default minimum: refused.
         (500, 1000, True, None),  # Below admin-raised minimum: refused.
+        (1100, 1200, True, None),  # Below admin-raised minimum: refused.
         (0, 100, True, None),  # Root refused.
     ],
 )
