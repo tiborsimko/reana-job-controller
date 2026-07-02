@@ -40,7 +40,10 @@ extras_require = {
         "reana-commons[kubernetes,tests]>=0.95.0a20,<0.96.0",
         "reana-db[tests]>=0.95.0a10,<0.96.0",
     ],
-    "ssh": ["paramiko[gssapi]>=3.2.0"],
+    # NOTE: Paramiko 5 removed GSSAPI/Kerberos support, which the SlurmCERN
+    # backend needs for gss_auth SSH to the Slurm head node. Keep Paramiko
+    # below 5 until the SlurmCERN transport migrates to asyncssh.
+    "ssh": ["paramiko[gssapi]>=3.2.0,<5.0"],
     "mytoken": [
         "pyjwt>=2.8.0",
         "libmytoken>=0.1.0",
