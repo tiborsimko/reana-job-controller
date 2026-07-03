@@ -9,6 +9,7 @@
 import base64
 import logging
 import os
+import shlex
 from stat import S_ISDIR
 
 from reana_job_controller.job_manager import JobManager
@@ -149,8 +150,19 @@ class SlurmJobManagerCERN(JobManager):
     def _pull_image(self):
         """Pull a Docker image using Singularity."""
         if self.img_type_docker:
+            container_image = self._get_container()
+            pull_command = (
+                "test -f {container_image} || singularity pull {docker_image}"
+            ).format(
+                container_image=shlex.quote(container_image),
+                docker_image=shlex.quote(f"docker://{self.docker_img}"),
+            )
             self.slurm_connection.exec_command(
-                f"cd {self.SLURM_WORKSAPCE_PATH} && singularity pull docker://{self.docker_img}"
+                "cd {workspace} && flock {lock_file} sh -c {pull_command}".format(
+                    workspace=shlex.quote(self.SLURM_WORKSAPCE_PATH),
+                    lock_file=shlex.quote(f".{container_image}.lock"),
+                    pull_command=shlex.quote(pull_command),
+                )
             )
 
     def _get_container(self):

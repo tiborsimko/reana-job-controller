@@ -34,6 +34,7 @@ from reana_job_controller.kubernetes_job_manager import (
     KubernetesJobManager,
     _get_compatible_kerberos_k8s_config,
 )
+from reana_job_controller.slurmcern_job_manager import SlurmJobManagerCERN
 
 
 def _build_user_secret(value, secret_type):
@@ -141,6 +142,24 @@ def test_execute_kubernetes_job(
                 # custom env + REANA_WORKSPACE + REANA_WORKFLOW_UUID + DASK_SCHEDULER_URI + two secrets
                 assert len(env_vars) == 6
                 assert command == [expected_command]
+
+
+def test_slurm_pull_image_reuses_existing_container():
+    """Test Slurm Docker image pulls are idempotent."""
+    job_manager = SlurmJobManagerCERN(
+        docker_img="docker.io/reanahub/reana-env-root6:6.18.04",
+        cmd="root --version",
+    )
+    job_manager.slurm_connection = mock.MagicMock()
+    SlurmJobManagerCERN.SLURM_WORKSAPCE_PATH = "/remote/workspace"
+
+    job_manager._pull_image()
+
+    job_manager.slurm_connection.exec_command.assert_called_once_with(
+        "cd /remote/workspace && flock .reana-env-root6_6.18.04.sif.lock "
+        "sh -c 'test -f reana-env-root6_6.18.04.sif || "
+        "singularity pull docker://docker.io/reanahub/reana-env-root6:6.18.04'"
+    )
 
 
 def test_execute_kubernetes_job_with_voms_proxy_init_container(
