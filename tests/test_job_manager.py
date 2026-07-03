@@ -623,7 +623,7 @@ def test_set_memory_limit(
         (1500, 100, False, 1500),  # UID well above minimum accepted as-is.
         (100, 100, False, 100),  # UID equal to minimum accepted.
         (1000, 1000, False, 1000),  # Accepted under admin-raised minimum.
-        (None, 100, False, WORKFLOW_RUNTIME_USER_UID),  # No UID: default.
+        (None, 100, False, int(WORKFLOW_RUNTIME_USER_UID)),  # No UID: default.
         (50, 100, True, None),  # Below default minimum: refused.
         (500, 1000, True, None),  # Below admin-raised minimum: refused.
         (1100, 1200, True, None),  # Below admin-raised minimum: refused.
