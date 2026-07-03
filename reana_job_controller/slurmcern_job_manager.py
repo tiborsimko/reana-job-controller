@@ -14,6 +14,7 @@ from stat import S_ISDIR
 from reana_job_controller.job_manager import JobManager
 from reana_job_controller.utils import SSHClient, initialize_krb5_token
 from reana_job_controller.config import (
+    SLURM_HEADNODE_GSS_HOSTNAME,
     SLURM_HEADNODE_HOSTNAME,
     SLURM_HEADNODE_PORT,
     SLURM_PARTITION,
@@ -124,6 +125,7 @@ class SlurmJobManagerCERN(JobManager):
         initialize_krb5_token(workflow_uuid=self.workflow_uuid)
         self.slurm_connection = SSHClient(
             hostname=SLURM_HEADNODE_HOSTNAME,
+            gss_host=SLURM_HEADNODE_GSS_HOSTNAME,
             port=SLURM_HEADNODE_PORT,
             timeout=SLURM_SSH_TIMEOUT,
             banner_timeout=SLURM_SSH_BANNER_TIMEOUT,

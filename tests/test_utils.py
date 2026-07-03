@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2024 CERN.
+# Copyright (C) 2024, 2026 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
 
 import logging
+from unittest import mock
+
 import pytest
 
+import reana_job_controller.utils as utils
 from reana_job_controller.utils import MultilineFormatter
 
 """REANA-Job-Controller utils tests."""
@@ -59,4 +62,125 @@ def test_multiline_formatter_format(message, expected_output):
             ),
         )
         == expected_output
+    )
+
+
+def test_ssh_client_uses_resolved_ipv4_for_connection_and_hostname_for_gss():
+    """Test SSHClient keeps hostname as Kerberos target when PTR is unavailable."""
+    ssh_client = mock.MagicMock()
+    paramiko_mock = mock.MagicMock()
+    paramiko_mock.SSHClient.return_value = ssh_client
+
+    with (
+        mock.patch.object(
+            utils.SSHClient.__closure__[0].cell_contents, "paramiko", paramiko_mock
+        ),
+        mock.patch.object(
+            utils.socket,
+            "gethostbyname_ex",
+            return_value=("slurm.example.org", [], ["10.0.0.10"]),
+        ),
+        mock.patch.object(utils.socket, "getfqdn", return_value="10.0.0.10"),
+    ):
+        utils.SSHClient.__closure__[1].cell_contents.clear()
+        try:
+            utils.SSHClient(hostname="slurm.example.org", port=22)
+        finally:
+            utils.SSHClient.__closure__[1].cell_contents.clear()
+
+    ssh_client.connect.assert_called_once_with(
+        hostname="10.0.0.10",
+        allow_agent=False,
+        auth_timeout=None,
+        banner_timeout=None,
+        gss_auth=True,
+        gss_host="slurm.example.org",
+        gss_trust_dns=False,
+        look_for_keys=False,
+        port=22,
+        timeout=None,
+        auth_strategy=None,
+    )
+
+
+def test_ssh_client_uses_reverse_dns_name_for_gss_when_available():
+    """Test SSHClient uses selected IPv4 PTR name as Kerberos target."""
+    ssh_client = mock.MagicMock()
+    paramiko_mock = mock.MagicMock()
+    paramiko_mock.SSHClient.return_value = ssh_client
+
+    with (
+        mock.patch.object(
+            utils.SSHClient.__closure__[0].cell_contents, "paramiko", paramiko_mock
+        ),
+        mock.patch.object(
+            utils.socket,
+            "gethostbyname_ex",
+            return_value=("slurm.example.org", [], ["10.0.0.11"]),
+        ),
+        mock.patch.object(
+            utils.socket, "getfqdn", return_value="slurmgate01.example.org"
+        ),
+    ):
+        utils.SSHClient.__closure__[1].cell_contents.clear()
+        try:
+            utils.SSHClient(hostname="slurm.example.org", port=22)
+        finally:
+            utils.SSHClient.__closure__[1].cell_contents.clear()
+
+    ssh_client.connect.assert_called_once_with(
+        hostname="10.0.0.11",
+        allow_agent=False,
+        auth_timeout=None,
+        banner_timeout=None,
+        gss_auth=True,
+        gss_host="slurmgate01.example.org",
+        gss_trust_dns=False,
+        look_for_keys=False,
+        port=22,
+        timeout=None,
+        auth_strategy=None,
+    )
+
+
+def test_ssh_client_prefers_explicit_gss_host():
+    """Test SSHClient supports overriding the Kerberos target."""
+    ssh_client = mock.MagicMock()
+    paramiko_mock = mock.MagicMock()
+    paramiko_mock.SSHClient.return_value = ssh_client
+
+    with (
+        mock.patch.object(
+            utils.SSHClient.__closure__[0].cell_contents, "paramiko", paramiko_mock
+        ),
+        mock.patch.object(
+            utils.socket,
+            "gethostbyname_ex",
+            return_value=("slurm.example.org", [], ["10.0.0.11"]),
+        ),
+        mock.patch.object(utils.socket, "getfqdn") as getfqdn,
+    ):
+        utils.SSHClient.__closure__[1].cell_contents.clear()
+        try:
+            utils.SSHClient(
+                hostname="slurm.example.org",
+                gss_host="slurmgate04.example.org",
+                port=22,
+            )
+        finally:
+            utils.SSHClient.__closure__[1].cell_contents.clear()
+
+    getfqdn.assert_not_called()
+    ssh_client.connect.assert_called_once_with(
+        hostname="10.0.0.11",
+        allow_agent=False,
+        auth_timeout=None,
+        banner_timeout=None,
+        gss_auth=True,
+        gss_host="slurmgate04.example.org",
+        gss_trust_dns=False,
+        look_for_keys=False,
+        port=22,
+        timeout=None,
+        auth_strategy=None,
     )

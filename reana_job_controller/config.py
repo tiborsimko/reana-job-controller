@@ -225,6 +225,9 @@ to align with Pod Security Standards "restricted" expectations.
 SLURM_HEADNODE_HOSTNAME = os.getenv("SLURM_HOSTNAME", "hpc-batch.cern.ch")
 """Hostname of SLURM head-node used for job management via SSH."""
 
+SLURM_HEADNODE_GSS_HOSTNAME = os.getenv("SLURM_GSS_HOSTNAME")
+"""Hostname of SLURM head-node Kerberos service principal used for SSH GSSAPI authentication."""
+
 SLURM_HEADNODE_PORT = os.getenv("SLURM_CLUSTER_PORT", "22")
 """Port of SLURM head node."""
 

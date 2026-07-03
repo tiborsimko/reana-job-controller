@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2019, 2020, 2021, 2022, 2023, 2024 CERN.
+# Copyright (C) 2019, 2020, 2021, 2022, 2023, 2024, 2026 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -22,6 +22,7 @@ from reana_db.models import Job, JobStatus
 
 from reana_job_controller.config import (
     COMPUTE_BACKENDS,
+    SLURM_HEADNODE_GSS_HOSTNAME,
     SLURM_HEADNODE_HOSTNAME,
     SLURM_HEADNODE_PORT,
     SLURM_SSH_TIMEOUT,
@@ -454,6 +455,7 @@ class JobMonitorSlurmCERN(JobMonitor):
         """
         slurm_connection = SSHClient(
             hostname=SLURM_HEADNODE_HOSTNAME,
+            gss_host=SLURM_HEADNODE_GSS_HOSTNAME,
             port=SLURM_HEADNODE_PORT,
             timeout=SLURM_SSH_TIMEOUT,
             banner_timeout=SLURM_SSH_BANNER_TIMEOUT,

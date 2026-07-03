@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2017, 2018, 2019, 2020, 2022, 2023, 2024 CERN.
+# Copyright (C) 2017, 2018, 2019, 2020, 2022, 2023, 2024, 2026 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -226,12 +226,19 @@ class SSHClient:
         banner_timeout=None,
         auth_timeout=None,
         auth_strategy=None,
+        gss_host=None,
     ):
         """Initialize ssh client."""
+        self.gss_host = gss_host or hostname
         if hostname:
             # resolve IPv4 address of DNS load-balanced Slurm nodes to ease connection troubles
             try:
-                self.hostname = socket.gethostbyname_ex(hostname)[2][0]
+                resolved_hostname = socket.gethostbyname_ex(hostname)[2][0]
+                self.hostname = resolved_hostname
+                if not gss_host:
+                    canonical_hostname = socket.getfqdn(resolved_hostname)
+                    if canonical_hostname != resolved_hostname:
+                        self.gss_host = canonical_hostname
             except Exception:
                 self.hostname = hostname
         else:
@@ -254,8 +261,8 @@ class SSHClient:
             auth_timeout=self.auth_timeout,
             banner_timeout=self.banner_timeout,
             gss_auth=True,
-            gss_host=self.hostname,
-            gss_trust_dns=True,
+            gss_host=self.gss_host,
+            gss_trust_dns=False,
             look_for_keys=False,
             port=self.port,
             timeout=self.timeout,
