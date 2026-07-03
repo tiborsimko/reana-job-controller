@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2019, 2020, 2021, 2024 CERN.
+# Copyright (C) 2019, 2020, 2021, 2024, 2026 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -25,7 +25,7 @@ class JobManager:
         docker_img="",
         cmd=[],
         prettified_cmd="",
-        env_vars={},
+        env_vars=None,
         workflow_uuid=None,
         workflow_workspace=None,
         job_name=None,
@@ -53,7 +53,7 @@ class JobManager:
         self.workflow_uuid = workflow_uuid
         self.workflow_workspace = workflow_workspace
         self.job_name = job_name
-        self.env_vars = self._extend_env_vars(env_vars)
+        self.env_vars = self._extend_env_vars(env_vars or {})
 
     def execution_hook(fn):
         """Add before execution hooks and DB operations."""
