@@ -206,7 +206,7 @@ all_darwin() {
     ./run-tests.sh --docs-openapi &&
     ./run-tests.sh --docs-sphinx &&
     pytest"
-    docker run -v "$(pwd)"/..:/code -ti $DOCKER_IMAGE_NAME bash -c "eval $RUN_TESTS_INSIDE_DOCKER"
+    docker run --user root -v "$(pwd)"/..:/code -ti $DOCKER_IMAGE_NAME bash -c "eval $RUN_TESTS_INSIDE_DOCKER"
     stop_db_container
 }
 
