@@ -283,3 +283,4 @@ class SSHClient:
                 "Exception while executing cmd: {} \n{}".format(command, str(e)),
                 exc_info=True,
             )
+            raise

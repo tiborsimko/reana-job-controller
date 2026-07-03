@@ -231,7 +231,7 @@ SLURM_HEADNODE_GSS_HOSTNAME = os.getenv("SLURM_GSS_HOSTNAME")
 SLURM_HEADNODE_PORT = os.getenv("SLURM_CLUSTER_PORT", "22")
 """Port of SLURM head node."""
 
-SLURM_PARTITION = os.getenv("SLURM_PARTITION", "inf-short")
+SLURM_PARTITION = os.getenv("SLURM_PARTITION", "photon")
 """Default slurm partition."""
 
 SLURM_JOB_TIMELIMIT = os.getenv("SLURM_JOB_TIMELIMIT", "60")

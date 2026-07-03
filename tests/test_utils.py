@@ -12,6 +12,7 @@ from unittest import mock
 import pytest
 
 import reana_job_controller.utils as utils
+from reana_job_controller.config import SLURM_PARTITION
 from reana_job_controller.utils import MultilineFormatter
 
 """REANA-Job-Controller utils tests."""
@@ -184,3 +185,32 @@ def test_ssh_client_prefers_explicit_gss_host():
         timeout=None,
         auth_strategy=None,
     )
+
+
+def test_ssh_client_exec_command_raises_remote_errors():
+    """Test SSHClient propagates command execution failures."""
+    ssh_client = mock.MagicMock()
+    ssh_client.get_transport.return_value.active = True
+    stdout = mock.MagicMock()
+    stdout.channel.recv_exit_status.return_value = 1
+    stderr = mock.MagicMock()
+    stderr.read.return_value = b"remote command failed"
+    ssh_client.exec_command.return_value = (mock.MagicMock(), stdout, stderr)
+    paramiko_mock = mock.MagicMock()
+    paramiko_mock.SSHClient.return_value = ssh_client
+
+    with mock.patch.object(
+        utils.SSHClient.__closure__[0].cell_contents, "paramiko", paramiko_mock
+    ):
+        utils.SSHClient.__closure__[1].cell_contents.clear()
+        try:
+            client = utils.SSHClient(hostname="slurm.example.org", port=22)
+            with pytest.raises(Exception, match="remote command failed"):
+                client.exec_command("failing command")
+        finally:
+            utils.SSHClient.__closure__[1].cell_contents.clear()
+
+
+def test_slurm_partition_uses_current_cern_default():
+    """Test default Slurm partition follows the current CERN cluster."""
+    assert SLURM_PARTITION == "photon"
