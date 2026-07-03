@@ -1,5 +1,5 @@
 # This file is part of REANA.
-# Copyright (C) 2019, 2020, 2021, 2022, 2023, 2024 CERN.
+# Copyright (C) 2019, 2020, 2021, 2022, 2023, 2024, 2026 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -7,6 +7,7 @@
 """CERN Slurm Job Manager."""
 
 import base64
+import hashlib
 import logging
 import os
 import shlex
@@ -35,6 +36,11 @@ class SlurmJobManagerCERN(JobManager):
     """Absolute REANA workspace path."""
     SLURM_HOME_PATH = os.getenv("SLURM_HOME_PATH", "")
     """Default SLURM home path."""
+    SLURM_SIF_CACHE_RELATIVE_PATH = ".reana/sif-cache"
+    """SIF image cache directory, relative to the SLURM home path.
+
+    The cache lives outside job workspaces so that converted images are
+    shared between workflows and are never transferred back to REANA."""
 
     def __init__(
         self,
@@ -148,27 +154,62 @@ class SlurmJobManagerCERN(JobManager):
         return not any(img_type in self.docker_img for img_type in [".sif", "cvmfs"])
 
     def _pull_image(self):
-        """Pull a Docker image using Singularity."""
+        """Pull a Docker image into the shared per-user SIF cache.
+
+        Reuses previously converted images across workflows and serialises
+        concurrent pulls of the same image with flock. The image is pulled
+        into a hidden temporary file and moved into place, so an interrupted
+        pull is never mistaken for a complete image.
+        """
         if self.img_type_docker:
-            container_image = self._get_container()
+            cache_dir = self._get_image_cache_dir()
+            image_stem = self._get_image_file_stem()
+            image_file = f"{image_stem}.sif"
+            temp_file = f".{image_stem}.part.sif"
             pull_command = (
-                "test -f {container_image} || singularity pull {docker_image}"
+                "test -f {image_file} || "
+                "(rm -f {temp_file} && "
+                "singularity pull {temp_file} {docker_image} && "
+                "mv {temp_file} {image_file})"
             ).format(
-                container_image=shlex.quote(container_image),
+                image_file=shlex.quote(image_file),
+                temp_file=shlex.quote(temp_file),
                 docker_image=shlex.quote(f"docker://{self.docker_img}"),
             )
             self.slurm_connection.exec_command(
-                "cd {workspace} && flock {lock_file} sh -c {pull_command}".format(
-                    workspace=shlex.quote(self.SLURM_WORKSAPCE_PATH),
-                    lock_file=shlex.quote(f".{container_image}.lock"),
+                "mkdir -p {cache_dir} && cd {cache_dir} && "
+                "flock {lock_file} sh -c {pull_command}".format(
+                    cache_dir=shlex.quote(cache_dir),
+                    lock_file=shlex.quote(f".{image_stem}.lock"),
                     pull_command=shlex.quote(pull_command),
                 )
             )
 
+    def _get_image_cache_dir(self):
+        """Get the shared per-user SIF image cache directory on the Slurm side."""
+        return os.path.join(
+            self.slurm_home_path, SlurmJobManagerCERN.SLURM_SIF_CACHE_RELATIVE_PATH
+        )
+
+    def _get_image_file_stem(self):
+        """Get the cache file name stem for the job's Docker image.
+
+        The stem combines a human-readable image name with the SHA-256 digest
+        of the fully-qualified image reference including the registry, the
+        namespace and the tag, so that distinct references never clash in the
+        shared cache. Note that mutable tags such as ``latest`` are converted
+        on first use and are not refreshed afterwards.
+        """
+        readable_name = self.docker_img.split("/")[-1].replace(":", "_")
+        reference_digest = hashlib.sha256(self.docker_img.encode("utf-8")).hexdigest()
+        return f"{readable_name}-{reference_digest}"
+
     def _get_container(self):
-        """Get container image."""
+        """Get container image path for job execution."""
         if self.img_type_docker:
-            return self.docker_img.split("/")[-1].replace(":", "_") + ".sif"
+            return os.path.join(
+                self._get_image_cache_dir(), f"{self._get_image_file_stem()}.sif"
+            )
         return self.docker_img
 
     def _dump_job_submission_file(self):

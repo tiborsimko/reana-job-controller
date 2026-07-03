@@ -145,21 +145,55 @@ def test_execute_kubernetes_job(
 
 
 def test_slurm_pull_image_reuses_existing_container():
-    """Test Slurm Docker image pulls are idempotent."""
+    """Test Slurm Docker image pulls populate the shared SIF cache idempotently."""
     job_manager = SlurmJobManagerCERN(
         docker_img="docker.io/reanahub/reana-env-root6:6.18.04",
         cmd="root --version",
     )
     job_manager.slurm_connection = mock.MagicMock()
-    SlurmJobManagerCERN.SLURM_WORKSAPCE_PATH = "/remote/workspace"
+    job_manager.slurm_home_path = "/slurmhome/johndoe"
+    stem = (
+        "reana-env-root6_6.18.04-"
+        "e589c4b1fa0f663994116d5a25c69d1a1bacab92f1764dfd82a8c5cfe8a37ada"
+    )
 
     job_manager._pull_image()
 
     job_manager.slurm_connection.exec_command.assert_called_once_with(
-        "cd /remote/workspace && flock .reana-env-root6_6.18.04.sif.lock "
-        "sh -c 'test -f reana-env-root6_6.18.04.sif || "
-        "singularity pull docker://docker.io/reanahub/reana-env-root6:6.18.04'"
+        "mkdir -p /slurmhome/johndoe/.reana/sif-cache && "
+        "cd /slurmhome/johndoe/.reana/sif-cache && "
+        f"flock .{stem}.lock "
+        f"sh -c 'test -f {stem}.sif || "
+        f"(rm -f .{stem}.part.sif && "
+        f"singularity pull .{stem}.part.sif "
+        "docker://docker.io/reanahub/reana-env-root6:6.18.04 && "
+        f"mv .{stem}.part.sif {stem}.sif)'"
     )
+
+
+def test_slurm_container_image_uses_shared_cache_path():
+    """Test Slurm jobs execute images from the shared SIF cache."""
+    job_manager = SlurmJobManagerCERN(
+        docker_img="docker.io/reanahub/reana-env-root6:6.18.04",
+        cmd="root --version",
+    )
+    job_manager.slurm_home_path = "/slurmhome/johndoe"
+
+    assert job_manager._get_container() == (
+        "/slurmhome/johndoe/.reana/sif-cache/"
+        "reana-env-root6_6.18.04-"
+        "e589c4b1fa0f663994116d5a25c69d1a1bacab92f1764dfd82a8c5cfe8a37ada.sif"
+    )
+
+
+def test_slurm_image_cache_names_do_not_clash():
+    """Test that ambiguous image references map to distinct cache entries."""
+    stems = set()
+    for docker_img in ("docker.io/foo/bar_baz:1", "docker.io/foo_bar/baz:1"):
+        job_manager = SlurmJobManagerCERN(docker_img=docker_img, cmd="true")
+        stems.add(job_manager._get_image_file_stem())
+
+    assert len(stems) == 2
 
 
 def test_execute_kubernetes_job_with_voms_proxy_init_container(
