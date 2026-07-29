@@ -21,16 +21,16 @@ from reana_job_controller.config import (
 )
 
 try:
-    import classad as _classad
+    import classad2 as _classad
 except ImportError:
-    # `classad` ships with the `htcondor` extras. In a correctly-built
+    # `classad2` ships with the `htcondor` extras. In a correctly-built
     # job-controller image this import must succeed. We do not fail at
     # module load time so that test environments and non-HTCondor builds
     # can still import this module, but we log a warning so misbuilt
     # production images leave an obvious breadcrumb.
     _classad = None
     logging.getLogger(__name__).warning(
-        "classad library is not available; htcondor_requirements "
+        "classad2 library is not available; htcondor_requirements "
         "expressions will not be validated at the schema layer. Expected "
         "only in test environments and non-HTCondor builds."
     )
@@ -131,10 +131,10 @@ def _validate_htcondor_quantity_string(field_name, default_unit):
 def _validate_classad_expression(value):
     """Validate that the value can be parsed as an HTCondor ClassAd expression.
 
-    No-op when the ``classad`` library is not importable. The
+    No-op when the ``classad2`` library is not importable. The
     module-load-time warning above flags this state in production logs.
-    The HTCondor manager submission path imports ``classad`` at module
-    level, so a job-controller environment that lacks ``classad`` cannot
+    The HTCondor manager submission path imports ``classad2`` at module
+    level, so a job-controller environment that lacks ``classad2`` cannot
     submit HTCondor jobs at all, regardless of whether schema validation
     runs.
     """
@@ -144,7 +144,7 @@ def _validate_classad_expression(value):
         return
     try:
         _classad.ExprTree(value)
-    except (SyntaxError, RuntimeError, ValueError) as exc:
+    except (_classad.ClassAdException, SyntaxError, RuntimeError, ValueError) as exc:
         raise ValidationError(
             f"htcondor_requirements is not a valid ClassAd expression: {exc}"
         )

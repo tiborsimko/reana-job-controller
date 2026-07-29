@@ -34,7 +34,7 @@ extras_require = {
         "sphinxcontrib-redoc>=1.5.1",
     ],
     "htcondor": [
-        "htcondor>=9.0.17",
+        "htcondor>=24.12,<25",
     ],
     "tests": [
         "reana-commons[kubernetes,tests]>=0.95.0a20,<0.96.0",

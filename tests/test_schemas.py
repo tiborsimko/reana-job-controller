@@ -101,7 +101,7 @@ def test_htcondor_field_absence_is_allowed(field):
 
 def test_htcondor_requirements_accepts_valid_classad_expression():
     """A valid ClassAd expression passes the htcondor_requirements validator."""
-    pytest.importorskip("classad")
+    pytest.importorskip("classad2")
     payload = dict(
         BASE_JOB_REQUEST,
         htcondor_requirements='(Arch =?= "aarch64")',
@@ -112,7 +112,7 @@ def test_htcondor_requirements_accepts_valid_classad_expression():
 
 def test_htcondor_requirements_rejects_invalid_classad_expression():
     """An unparseable ClassAd expression is rejected with a clear message."""
-    pytest.importorskip("classad")
+    pytest.importorskip("classad2")
     payload = dict(
         BASE_JOB_REQUEST,
         htcondor_requirements="(Arch =?= ",

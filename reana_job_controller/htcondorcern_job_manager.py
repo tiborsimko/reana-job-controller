@@ -13,7 +13,7 @@ import shlex
 import threading
 from shutil import copyfile
 
-import classad
+import classad2 as classad
 from flask import current_app
 from reana_db.database import Session
 from reana_db.models import Workflow
@@ -128,68 +128,82 @@ class HTCondorJobManagerCERN(JobManager):
         self.htcondor_request_disk = htcondor_request_disk
         self.htcondor_requirements = htcondor_requirements
 
-        # We need to import the htcondor package later during runtime after the Kerberos environment is fully initialised.
-        # Without a valid Kerberos ticket, importing will exit with "ERROR: Unauthorized 401 - do you have authentication tokens? Error "/usr/bin/myschedd.sh |"
+        # Import HTCondor only after initialising Kerberos. Importing the module
+        # evaluates the ``myschedd.sh`` configuration, which requires a valid
+        # ticket.
         initialize_krb5_token(workflow_uuid=self.workflow_uuid)
-        globals()["htcondor"] = __import__("htcondor")
+        globals()["htcondor"] = __import__("htcondor2")
 
     @JobManager.execution_hook
     def execute(self):
         """Execute / submit a job with HTCondor."""
         os.chdir(self.workflow_workspace)
-        job_ad = classad.ClassAd()
-        job_ad["JobDescription"] = (
-            self.workflow.get_full_workflow_name() + "_" + self.job_name
-        )
-        job_ad["JobMaxRetries"] = 3
-        job_ad["LeaveJobInQueue"] = classad.ExprTree(
-            "(JobStatus == 4) && ((StageOutFinish =?= UNDEFINED) || "
-            "(StageOutFinish == 0))"
-        )
-        job_ad["Cmd"] = (
+        executable = (
             "./job_wrapper.sh"
             if not self.unpacked_img
             else "./job_singularity_wrapper.sh"
         )
+        submit_description = {
+            "description": (
+                self.workflow.get_full_workflow_name() + "_" + self.job_name
+            ),
+            "MY.JobMaxRetries": "3",
+            "leave_in_queue": (
+                "(JobStatus == 4) && ((StageOutFinish =?= UNDEFINED) || "
+                "(StageOutFinish == 0))"
+            ),
+            "executable": executable,
+            "environment": self._format_env_vars(),
+            "output": "reana_job.$(ClusterId).$(ProcId).out",
+            "error": "reana_job.$(ClusterId).$(ProcId).err",
+            "should_transfer_files": "YES",
+            "when_to_transfer_output": "ON_EXIT",
+            "transfer_input_files": self._get_input_files(),
+            "transfer_output_files": ".",
+            "periodic_release": "(HoldReasonCode == 35)",
+        }
         if not self.unpacked_img:
-            job_ad["Arguments"] = self._format_arguments()
-            job_ad["DockerImage"] = self.docker_img
-            job_ad["WantDocker"] = True
-            job_ad["DockerNetworkType"] = "host"
-        job_ad["Environment"] = self._format_env_vars()
-        job_ad["Out"] = classad.ExprTree(
-            'strcat("reana_job.", ClusterId, ".", ProcId, ".out")'
-        )
-        job_ad["Err"] = classad.ExprTree(
-            'strcat("reana_job.", ClusterId, ".", ProcId, ".err")'
-        )
-        job_ad["log"] = classad.ExprTree('strcat("reana_job.", ClusterId, ".err")')
-        job_ad["ShouldTransferFiles"] = "YES"
-        job_ad["WhenToTransferOutput"] = "ON_EXIT"
-        job_ad["TransferInput"] = self._get_input_files()
-        job_ad["TransferOutput"] = "."
-        job_ad["PeriodicRelease"] = classad.ExprTree("(HoldReasonCode == 35)")
+            submit_description["arguments"] = self._format_arguments()
+            # Keep CERN's existing legacy Docker job attributes. Using the
+            # ``docker_image`` submit command would implicitly migrate these
+            # jobs to HTCondor's Container Universe.
+            submit_description["MY.DockerImage"] = classad.quote(self.docker_img)
+            submit_description["MY.WantDocker"] = "True"
+            submit_description["MY.DockerNetworkType"] = classad.quote("host")
         if self.htcondor_max_runtime in HTCONDOR_JOB_FLAVOURS.keys():
-            job_ad["JobFlavour"] = self.htcondor_max_runtime
+            submit_description["MY.JobFlavour"] = classad.quote(
+                self.htcondor_max_runtime
+            )
         elif str.isdigit(self.htcondor_max_runtime):
-            job_ad["MaxRunTime"] = int(self.htcondor_max_runtime)
+            submit_description["MY.MaxRunTime"] = self.htcondor_max_runtime
         else:
-            job_ad["MaxRunTime"] = 3600
+            submit_description["MY.MaxRunTime"] = "3600"
         if self.htcondor_accounting_group:
-            job_ad["AccountingGroup"] = self.htcondor_accounting_group
+            submit_description["MY.AccountingGroup"] = classad.quote(
+                self.htcondor_accounting_group
+            )
         if self.htcondor_request_cpus:
-            job_ad["RequestCpus"] = int(self.htcondor_request_cpus)
+            submit_description["request_cpus"] = self.htcondor_request_cpus
         if self.htcondor_request_memory:
-            job_ad["RequestMemory"] = htcondor_quantity_to_unit(
-                self.htcondor_request_memory, "M"
+            submit_description["request_memory"] = str(
+                htcondor_quantity_to_unit(self.htcondor_request_memory, "M")
             )
         if self.htcondor_request_disk:
-            job_ad["RequestDisk"] = htcondor_quantity_to_unit(
-                self.htcondor_request_disk, "K"
+            submit_description["request_disk"] = str(
+                htcondor_quantity_to_unit(self.htcondor_request_disk, "K")
             )
         if self.htcondor_requirements:
-            job_ad["Requirements"] = classad.ExprTree(self.htcondor_requirements)
-        future = current_app.htcondor_executor.submit(self._submit, job_ad)
+            # ``MY.Requirements`` preserves the existing behaviour where the
+            # supplied expression is the complete Requirements expression.
+            submit_description["MY.Requirements"] = self.htcondor_requirements
+        else:
+            # Prevent the submit engine from generating constraints for the
+            # submit host's architecture and operating system. The legacy
+            # raw-ClassAd submission did not add a Requirements expression.
+            submit_description["MY.Requirements"] = "True"
+        self._validate_submit_description(submit_description)
+        submit = htcondor.Submit(submit_description)  # noqa: F821
+        future = current_app.htcondor_executor.submit(self._submit, submit)
         clusterid = future.result()
         return clusterid
 
@@ -234,11 +248,24 @@ class HTCondorJobManagerCERN(JobManager):
         )
 
     def _format_env_vars(self):
-        """Return job env vars in job description format."""
-        job_env = ""
+        """Return job env vars in HTCondor's new environment syntax."""
+        entries = []
         for key, value in self.env_vars.items():
-            job_env += " {0}={1}".format(key, value)
-        return job_env
+            entry = "{0}={1}".format(key, value)
+            entry = entry.replace('"', '""').replace("'", "''")
+            entries.append("'{0}'".format(entry))
+        return '"{0}"'.format(" ".join(entries))
+
+    @staticmethod
+    def _validate_submit_description(submit_description):
+        """Reject values that could inject additional submit commands."""
+        forbidden_characters = ("\n", "\r", "\x00")
+        for command, value in submit_description.items():
+            if any(character in value for character in forbidden_characters):
+                raise ValueError(
+                    "HTCondor submit command {!r} contains a line break or "
+                    "null byte".format(command)
+                )
 
     def _get_workflow(self):
         """Get workflow from db."""
@@ -294,32 +321,45 @@ class HTCondorJobManagerCERN(JobManager):
             raise e
 
     @retry(stop_max_attempt_number=MAX_NUM_RETRIES, wait_fixed=RETRY_WAIT_TIME)
-    def _submit(self, job_ad):
+    def _submit(self, submit):
         """Execute submission transaction."""
-        ads = []
         schedd = HTCondorJobManagerCERN._get_schedd()
-        logging.info("Submiting job - {}".format(job_ad))
-        clusterid = schedd.submit(job_ad, 1, True, ads)
-        HTCondorJobManagerCERN._spool_input(ads)
-        return clusterid
+        logging.info("Submitting job - {}".format(submit))
+        result = schedd.submit(submit, count=1, spool=True)
+        HTCondorJobManagerCERN._spool_input(result)
+        return result.cluster()
 
+    @staticmethod
     @retry(stop_max_attempt_number=MAX_NUM_RETRIES, wait_fixed=RETRY_WAIT_TIME)
-    def _spool_input(ads):
+    def _spool_input(result):
         schedd = HTCondorJobManagerCERN._get_schedd()
-        logging.info("Spooling job inputs - {}".format(ads))
-        schedd.spool(ads)
+        logging.info("Spooling job inputs - {}".format(result))
+        schedd.spool(result)
 
+    @staticmethod
     @retry(stop_max_attempt_number=MAX_NUM_RETRIES, wait_fixed=RETRY_WAIT_TIME)
     def _get_schedd():
         """Find and return the HTCondor schedd."""
         schedd = getattr(thread_local, "MONITOR_THREAD_SCHEDD", None)
         if schedd is None:
-            setattr(
-                thread_local, "MONITOR_THREAD_SCHEDD", htcondor.Schedd()  # noqa: F821
+            schedd_host = htcondor.param.get("SCHEDD_HOST")  # noqa: F821
+            if not schedd_host:
+                raise RuntimeError("SCHEDD_HOST is not configured")
+
+            schedd_location = htcondor.Collector().locate(  # noqa: F821
+                htcondor.DaemonType.Schedd, schedd_host  # noqa: F821
             )
+            if schedd_location is None:
+                raise RuntimeError(
+                    "Unable to locate HTCondor schedd {}".format(schedd_host)
+                )
+
+            schedd = htcondor.Schedd(schedd_location)  # noqa: F821
+            setattr(thread_local, "MONITOR_THREAD_SCHEDD", schedd)
         logging.info("Getting schedd: {}".format(thread_local.MONITOR_THREAD_SCHEDD))
         return thread_local.MONITOR_THREAD_SCHEDD
 
+    @staticmethod
     def stop(backend_job_id):
         """Stop HTCondor job execution."""
         try:
@@ -331,6 +371,7 @@ class HTCondorJobManagerCERN(JobManager):
         except Exception as e:
             logging.error(e, exc_info=True)
 
+    @staticmethod
     @retry(stop_max_attempt_number=MAX_NUM_RETRIES, wait_fixed=RETRY_WAIT_TIME)
     def spool_output(backend_job_id):
         """Transfer job output."""
@@ -369,16 +410,12 @@ class HTCondorJobManagerCERN(JobManager):
             logging.error(msg, exc_info=True)
             return msg
 
+    @staticmethod
     def find_job_in_history(backend_job_id):
         """Return job if present in condor history."""
         schedd = HTCondorJobManagerCERN._get_schedd()
         ads = ["ClusterId", "JobStatus", "ExitCode", "RemoveReason"]
-        condor_it = schedd.history(
+        condor_jobs = schedd.history(
             "ClusterId == {0}".format(backend_job_id), ads, match=1
         )
-        try:
-            condor_job = next(condor_it)
-            return condor_job
-        except Exception:
-            # Did not match to any job in the history  yet
-            return None
+        return condor_jobs[0] if condor_jobs else None
