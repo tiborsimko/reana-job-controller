@@ -55,23 +55,62 @@ RUN apt-get update -y && \
 
 # Default compute backend is Kubernetes
 ARG COMPUTE_BACKENDS=kubernetes
+ARG AUTHEN_KRB5_VERSION=1.906
+ARG AUTHEN_KRB5_SHA256=2dc0928efb13b5f305df3452088e63f92b67acea87fbd470308f460f79126e84
+
+COPY patches/Authen-Krb5-cc_copy_creds.patch /tmp/
 
 # Install CERN HTCondor compute backend dependencies (if necessary)
+# Prefer exact packages from stable after promotion. Keep QA as a temporary
+# fallback because the aarch64 packages are not available from stable yet.
 # hadolint ignore=DL3008,DL4006
-RUN if echo "$COMPUTE_BACKENDS" | grep -q "htcondorcern"; then \
+RUN set -e; \
+    if echo "$COMPUTE_BACKENDS" | grep -q "htcondorcern"; then \
       set -e; \
+      case "$TARGETARCH" in \
+        amd64) RPM_ARCH=x86_64 ;; \
+        arm64) RPM_ARCH=aarch64 ;; \
+        *) echo "Unsupported HTCondor target architecture: $TARGETARCH" >&2; exit 1 ;; \
+      esac; \
+      CERN_BATCH_STABLE_REPOSITORY="https://linuxsoft.cern.ch/internal/repos/batch9el-stable/$RPM_ARCH/os/Packages"; \
+      CERN_BATCH_QA_REPOSITORY="https://linuxsoft.cern.ch/internal/repos/batch9el-qa/$RPM_ARCH/os/Packages"; \
       apt-get update -y; \
-      apt-get install --no-install-recommends -y wget rpm2cpio cpio gnupg2 condor; \
-      wget -q -O ngbauth-submit.rpm https://linuxsoft.cern.ch/internal/repos/batch9al-stable/x86_64/os/Packages/n/ngbauth-submit-0.31-1.al9.cern.noarch.rpm; \
-      wget -q -O myschedd.rpm https://linuxsoft.cern.ch/internal/repos/batch9al-stable/x86_64/os/Packages/m/myschedd-1.9-2.al9.cern.x86_64.rpm; \
-      rpm2cpio /myschedd.rpm | cpio -idmv -D /; \
-      rpm2cpio /ngbauth-submit.rpm | cpio -idmv -D /; \
-      rm -f /myschedd.rpm /ngbauth-submit.rpm; \
-      apt-get remove -y gnupg2 wget rpm2cpio cpio; \
+      apt-get install --no-install-recommends -y wget rpm2cpio cpio gnupg2 condor cpanminus gcc make patch; \
+      wget -q -O /tmp/Authen-Krb5.tar.gz "https://cpan.metacpan.org/authors/id/O/OD/ODENBACH/Authen-Krb5-$AUTHEN_KRB5_VERSION.tar.gz"; \
+      echo "$AUTHEN_KRB5_SHA256  /tmp/Authen-Krb5.tar.gz" | sha256sum -c -; \
+      tar -xzf /tmp/Authen-Krb5.tar.gz -C /tmp; \
+      patch -d "/tmp/Authen-Krb5-$AUTHEN_KRB5_VERSION" -p1 < /tmp/Authen-Krb5-cc_copy_creds.patch; \
+      cpanm --notest --mirror https://cpan.metacpan.org --mirror-only "/tmp/Authen-Krb5-$AUTHEN_KRB5_VERSION"; \
+      perl -MAuthen::Krb5 -e 'die "cc_copy_creds is unavailable\n" unless Authen::Krb5->can("cc_copy_creds")'; \
+      if wget -q -O /ngbauth-submit.rpm "$CERN_BATCH_STABLE_REPOSITORY/n/ngbauth-submit-0.33-1.rh9.cern.noarch.rpm" && \
+          rpm2cpio /ngbauth-submit.rpm > /ngbauth-submit.cpio; then \
+        echo "Using ngbauth-submit from the stable repository."; \
+      else \
+        echo "Stable ngbauth-submit is unavailable or invalid; using QA."; \
+        wget -q -O /ngbauth-submit.rpm "$CERN_BATCH_QA_REPOSITORY/n/ngbauth-submit-0.33-1.rh9.cern.noarch.rpm"; \
+        rpm2cpio /ngbauth-submit.rpm > /ngbauth-submit.cpio; \
+      fi; \
+      if wget -q -O /myschedd.rpm "$CERN_BATCH_STABLE_REPOSITORY/m/myschedd-1.9-3.rh9.cern.$RPM_ARCH.rpm" && \
+          rpm2cpio /myschedd.rpm > /myschedd.cpio; then \
+        echo "Using myschedd from the stable repository."; \
+      else \
+        echo "Stable myschedd is unavailable or invalid; using QA."; \
+        wget -q -O /myschedd.rpm "$CERN_BATCH_QA_REPOSITORY/m/myschedd-1.9-3.rh9.cern.$RPM_ARCH.rpm"; \
+        rpm2cpio /myschedd.rpm > /myschedd.cpio; \
+      fi; \
+      cpio -idmv -D / < /myschedd.cpio; \
+      cpio -idmv -D / < /ngbauth-submit.cpio; \
+      rm -rf "/tmp/Authen-Krb5-$AUTHEN_KRB5_VERSION"; \
+      rm -f /tmp/Authen-Krb5.tar.gz /myschedd.rpm /myschedd.cpio /ngbauth-submit.rpm /ngbauth-submit.cpio; \
+      apt-get remove -y gnupg2 wget rpm2cpio cpio cpanminus gcc make patch; \
       apt-get autoremove -y; \
       apt-get clean; \
       rm -rf /var/lib/apt/lists/*; \
-    fi
+      test -x /usr/bin/myschedd; \
+      test -x /usr/bin/myschedd.sh; \
+      perl -T -c /usr/bin/batch_krb5_credential; \
+    fi; \
+    rm -f /tmp/Authen-Krb5-cc_copy_creds.patch
 
 # Copy Kerberos related configuration files
 COPY etc/krb5.conf /etc/krb5.conf

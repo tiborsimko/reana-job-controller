@@ -9,6 +9,8 @@ pools:
     standard:
       - bigbird08.cern.ch
       - bigbird10.cern.ch
+      - bigbird101.cern.ch
+      - bigbird102.cern.ch
       - bigbird11.cern.ch
       - bigbird12.cern.ch
       - bigbird13.cern.ch
@@ -30,3 +32,7 @@ pools:
   spool:
     standard:
       - batfink02.cern.ch
+  eossubmit:
+    standard:
+      - bigbird103.cern.ch
+      - bigbird24.cern.ch
