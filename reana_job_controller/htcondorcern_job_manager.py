@@ -7,9 +7,12 @@
 """CERN HTCondor Job Manager."""
 
 import base64
+import hashlib
 import logging
 import os
 import shlex
+import shutil
+import stat
 import threading
 from shutil import copyfile
 
@@ -29,6 +32,18 @@ thread_local = threading.local()
 
 class HTCondorJobManagerCERN(JobManager):
     """CERN HTCondor job management."""
+
+    FILE_TRANSFER_DIRECTORY_PREFIX = "reana_job."
+    FILE_TRANSFER_DIRECTORY_SUFFIX = ".filetransfer"
+    INTERNAL_OUTPUT_FILES = {
+        ".chirp.config",
+        ".job.ad",
+        ".machine.ad",
+        "_condor_stderr",
+        "_condor_stdout",
+        "condor_exec.exe",
+    }
+    INTERNAL_WORKFLOW_PATHS = {"yadage": {"_yadage"}}
 
     MAX_NUM_RETRIES = 3
     """Maximum number of tries used for getting schedd, job submission and
@@ -127,6 +142,16 @@ class HTCondorJobManagerCERN(JobManager):
         self.htcondor_request_memory = htcondor_request_memory
         self.htcondor_request_disk = htcondor_request_disk
         self.htcondor_requirements = htcondor_requirements
+        self.file_transfer_workspace = os.path.join(
+            self.workflow_workspace,
+            "{0}{1}{2}".format(
+                self.FILE_TRANSFER_DIRECTORY_PREFIX,
+                self.job_id,
+                self.FILE_TRANSFER_DIRECTORY_SUFFIX,
+            ),
+        )
+        self.input_file_signatures = {}
+        self.input_symlinks = set()
 
         # Import HTCondor only after initialising Kerberos. Importing the module
         # evaluates the ``myschedd.sh`` configuration, which requires a valid
@@ -138,74 +163,77 @@ class HTCondorJobManagerCERN(JobManager):
     def execute(self):
         """Execute / submit a job with HTCondor."""
         os.chdir(self.workflow_workspace)
-        executable = (
-            "./job_wrapper.sh"
-            if not self.unpacked_img
-            else "./job_singularity_wrapper.sh"
+        executable_name = (
+            "job_wrapper.sh" if not self.unpacked_img else "job_singularity_wrapper.sh"
         )
-        submit_description = {
-            "description": (
-                self.workflow.get_full_workflow_name() + "_" + self.job_name
-            ),
-            "MY.JobMaxRetries": "3",
-            "leave_in_queue": (
-                "(JobStatus == 4) && ((StageOutFinish =?= UNDEFINED) || "
-                "(StageOutFinish == 0))"
-            ),
-            "executable": executable,
-            "environment": self._format_env_vars(),
-            "output": "reana_job.$(ClusterId).$(ProcId).out",
-            "error": "reana_job.$(ClusterId).$(ProcId).err",
-            "should_transfer_files": "YES",
-            "when_to_transfer_output": "ON_EXIT",
-            "transfer_input_files": self._get_input_files(),
-            "transfer_output_files": ".",
-            "periodic_release": "(HoldReasonCode == 35)",
-        }
-        if not self.unpacked_img:
-            submit_description["arguments"] = self._format_arguments()
-            # Keep CERN's existing legacy Docker job attributes. Using the
-            # ``docker_image`` submit command would implicitly migrate these
-            # jobs to HTCondor's Container Universe.
-            submit_description["MY.DockerImage"] = classad.quote(self.docker_img)
-            submit_description["MY.WantDocker"] = "True"
-            submit_description["MY.DockerNetworkType"] = classad.quote("host")
-        if self.htcondor_max_runtime in HTCONDOR_JOB_FLAVOURS.keys():
-            submit_description["MY.JobFlavour"] = classad.quote(
-                self.htcondor_max_runtime
-            )
-        elif str.isdigit(self.htcondor_max_runtime):
-            submit_description["MY.MaxRunTime"] = self.htcondor_max_runtime
-        else:
-            submit_description["MY.MaxRunTime"] = "3600"
-        if self.htcondor_accounting_group:
-            submit_description["MY.AccountingGroup"] = classad.quote(
-                self.htcondor_accounting_group
-            )
-        if self.htcondor_request_cpus:
-            submit_description["request_cpus"] = self.htcondor_request_cpus
-        if self.htcondor_request_memory:
-            submit_description["request_memory"] = str(
-                htcondor_quantity_to_unit(self.htcondor_request_memory, "M")
-            )
-        if self.htcondor_request_disk:
-            submit_description["request_disk"] = str(
-                htcondor_quantity_to_unit(self.htcondor_request_disk, "K")
-            )
-        if self.htcondor_requirements:
-            # ``MY.Requirements`` preserves the existing behaviour where the
-            # supplied expression is the complete Requirements expression.
-            submit_description["MY.Requirements"] = self.htcondor_requirements
-        else:
-            # Prevent the submit engine from generating constraints for the
-            # submit host's architecture and operating system. The legacy
-            # raw-ClassAd submission did not add a Requirements expression.
-            submit_description["MY.Requirements"] = "True"
-        self._validate_submit_description(submit_description)
-        submit = htcondor.Submit(submit_description)  # noqa: F821
-        future = current_app.htcondor_executor.submit(self._submit, submit)
-        clusterid = future.result()
-        return clusterid
+        transfer_input_files = self._prepare_file_transfer()
+        try:
+            submit_description = {
+                "description": (
+                    self.workflow.get_full_workflow_name() + "_" + self.job_name
+                ),
+                "MY.JobMaxRetries": "3",
+                "leave_in_queue": (
+                    "(JobStatus == 4) && ((StageOutFinish =?= UNDEFINED) || "
+                    "(StageOutFinish == 0))"
+                ),
+                "initialdir": self.file_transfer_workspace,
+                "executable": os.path.join(self.workflow_workspace, executable_name),
+                "environment": self._format_env_vars(),
+                "output": "reana_job.$(ClusterId).$(ProcId).out",
+                "error": "reana_job.$(ClusterId).$(ProcId).err",
+                "should_transfer_files": "YES",
+                "when_to_transfer_output": "ON_EXIT",
+                "transfer_input_files": transfer_input_files,
+                "transfer_output_files": ".",
+                "periodic_release": "(HoldReasonCode == 35)",
+            }
+            if not self.unpacked_img:
+                submit_description["arguments"] = self._format_arguments()
+                # Keep CERN's existing legacy Docker job attributes. Using the
+                # ``docker_image`` submit command would implicitly migrate these
+                # jobs to HTCondor's Container Universe.
+                submit_description["MY.DockerImage"] = classad.quote(self.docker_img)
+                submit_description["MY.WantDocker"] = "True"
+                submit_description["MY.DockerNetworkType"] = classad.quote("host")
+            if self.htcondor_max_runtime in HTCONDOR_JOB_FLAVOURS.keys():
+                submit_description["MY.JobFlavour"] = classad.quote(
+                    self.htcondor_max_runtime
+                )
+            elif str.isdigit(self.htcondor_max_runtime):
+                submit_description["MY.MaxRunTime"] = self.htcondor_max_runtime
+            else:
+                submit_description["MY.MaxRunTime"] = "3600"
+            if self.htcondor_accounting_group:
+                submit_description["MY.AccountingGroup"] = classad.quote(
+                    self.htcondor_accounting_group
+                )
+            if self.htcondor_request_cpus:
+                submit_description["request_cpus"] = self.htcondor_request_cpus
+            if self.htcondor_request_memory:
+                submit_description["request_memory"] = str(
+                    htcondor_quantity_to_unit(self.htcondor_request_memory, "M")
+                )
+            if self.htcondor_request_disk:
+                submit_description["request_disk"] = str(
+                    htcondor_quantity_to_unit(self.htcondor_request_disk, "K")
+                )
+            if self.htcondor_requirements:
+                # ``MY.Requirements`` preserves the existing behaviour where the
+                # supplied expression is the complete Requirements expression.
+                submit_description["MY.Requirements"] = self.htcondor_requirements
+            else:
+                # Prevent the submit engine from generating constraints for the
+                # submit host's architecture and operating system. The legacy
+                # raw-ClassAd submission did not add a Requirements expression.
+                submit_description["MY.Requirements"] = "True"
+            self._validate_submit_description(submit_description)
+            submit = htcondor.Submit(submit_description)  # noqa: F821
+            future = current_app.htcondor_executor.submit(self._submit, submit)
+            return future.result()
+        except Exception:
+            self.cleanup_file_transfer()
+            raise
 
     def _replace_absolute_paths_with_relative(self, cmd):
         """Replace absolute with relative path."""
@@ -277,6 +305,219 @@ class HTCondorJobManagerCERN(JobManager):
         else:
             pass
 
+    @classmethod
+    def _is_file_transfer_directory(cls, name):
+        """Return whether a workspace entry is an HTCondor transfer directory."""
+        return name.startswith(cls.FILE_TRANSFER_DIRECTORY_PREFIX) and name.endswith(
+            cls.FILE_TRANSFER_DIRECTORY_SUFFIX
+        )
+
+    def _is_internal_workflow_path(self, relative_path):
+        """Return whether a path contains workflow-engine runtime state."""
+        workflow_type = getattr(self.workflow, "type_", None)
+        internal_paths = self.INTERNAL_WORKFLOW_PATHS.get(workflow_type, set())
+        top_level_path = relative_path.split(os.sep, 1)[0]
+        return top_level_path in internal_paths
+
+    def _exclude_internal_workflow_paths(self, root, entries, base_path):
+        """Return entries excluding workflow-engine runtime state paths."""
+        return [
+            entry
+            for entry in entries
+            if not self._is_internal_workflow_path(
+                os.path.relpath(os.path.join(root, entry), base_path)
+            )
+        ]
+
+    @staticmethod
+    def _hash_file(path):
+        """Return the SHA-256 digest of a file."""
+        digest = hashlib.sha256()
+        with open(path, "rb") as file_object:
+            for chunk in iter(lambda: file_object.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _file_signature(path):
+        """Return metadata that identifies a local workspace file."""
+        file_stat = os.stat(path, follow_symlinks=False)
+        return (
+            file_stat.st_dev,
+            file_stat.st_ino,
+            stat.S_IFMT(file_stat.st_mode),
+            file_stat.st_size,
+            file_stat.st_mtime_ns,
+            file_stat.st_ctime_ns,
+        )
+
+    @classmethod
+    def _files_equal(cls, first_path, second_path):
+        """Return whether two regular files have identical contents."""
+        if os.path.getsize(first_path) != os.path.getsize(second_path):
+            return False
+        return cls._hash_file(first_path) == cls._hash_file(second_path)
+
+    def _snapshot_workspace(self):
+        """Record workspace metadata before the HTCondor job runs."""
+        file_signatures = {}
+        symlinks = set()
+        for root, directories, files in os.walk(self.workflow_workspace):
+            directories[:] = self._exclude_internal_workflow_paths(
+                root, directories, self.workflow_workspace
+            )
+            files = self._exclude_internal_workflow_paths(
+                root, files, self.workflow_workspace
+            )
+            regular_directories = []
+            for directory in directories:
+                if self._is_file_transfer_directory(directory):
+                    continue
+                path = os.path.join(root, directory)
+                relative_path = os.path.relpath(path, self.workflow_workspace)
+                if os.path.islink(path):
+                    symlinks.add(relative_path)
+                else:
+                    regular_directories.append(directory)
+            directories[:] = regular_directories
+
+            for filename in files:
+                path = os.path.join(root, filename)
+                relative_path = os.path.relpath(path, self.workflow_workspace)
+                if os.path.islink(path):
+                    symlinks.add(relative_path)
+                    continue
+                try:
+                    file_signatures[relative_path] = self._file_signature(path)
+                except FileNotFoundError:
+                    # A concurrently removed file cannot be an input to this job.
+                    continue
+        return file_signatures, symlinks
+
+    def _prepare_file_transfer(self):
+        """Prepare an empty local destination for the returned sandbox."""
+        input_files = self._get_input_files().split(",")
+        input_files = [filename for filename in input_files if filename]
+        self.input_file_signatures, self.input_symlinks = self._snapshot_workspace()
+        os.makedirs(self.file_transfer_workspace)
+        return ",".join(
+            os.path.join(self.workflow_workspace, filename) for filename in input_files
+        )
+
+    def cleanup_file_transfer(self):
+        """Remove the local HTCondor file-transfer workspace."""
+        try:
+            shutil.rmtree(self.file_transfer_workspace)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logging.error(
+                "Failed to remove HTCondor file-transfer directory %s",
+                self.file_transfer_workspace,
+                exc_info=True,
+            )
+
+    def _validate_promotion_path(self, path):
+        """Ensure that an output destination remains inside the workspace."""
+        workspace = os.path.realpath(self.workflow_workspace)
+        parent = os.path.realpath(os.path.dirname(path))
+        if os.path.commonpath([workspace, parent]) != workspace:
+            raise RuntimeError(
+                "HTCondor output path escapes the workflow workspace: {}".format(path)
+            )
+
+    def _was_input_symlink(self, relative_path):
+        """Return whether a path is or descends from an input symlink."""
+        path_parts = relative_path.split(os.sep)
+        return any(
+            os.path.join(*path_parts[:part_count]) in self.input_symlinks
+            for part_count in range(1, len(path_parts) + 1)
+        )
+
+    @staticmethod
+    def _raise_concurrent_modification(relative_path):
+        """Raise an output conflict for a locally changed workspace path."""
+        raise RuntimeError(
+            "HTCondor output conflicts with a concurrently modified "
+            "workspace file: {}".format(relative_path)
+        )
+
+    def promote_output(self):
+        """Move new and modified HTCondor output files into the workspace."""
+        if not os.path.isdir(self.file_transfer_workspace):
+            raise RuntimeError(
+                "HTCondor file-transfer directory does not exist: {}".format(
+                    self.file_transfer_workspace
+                )
+            )
+
+        for root, directories, files in os.walk(self.file_transfer_workspace):
+            directories[:] = self._exclude_internal_workflow_paths(
+                root, directories, self.file_transfer_workspace
+            )
+            files = self._exclude_internal_workflow_paths(
+                root, files, self.file_transfer_workspace
+            )
+            for directory in list(directories):
+                source = os.path.join(root, directory)
+                relative_path = os.path.relpath(source, self.file_transfer_workspace)
+                if self._was_input_symlink(relative_path):
+                    directories.remove(directory)
+                    continue
+                if os.path.islink(source):
+                    raise RuntimeError(
+                        "Refusing to promote HTCondor output symlink: {}".format(source)
+                    )
+
+                destination = os.path.join(self.workflow_workspace, relative_path)
+                self._validate_promotion_path(destination)
+                if os.path.islink(destination):
+                    self._raise_concurrent_modification(relative_path)
+                os.makedirs(destination, exist_ok=True)
+
+            for filename in files:
+                source = os.path.join(root, filename)
+                if os.path.islink(source):
+                    raise RuntimeError(
+                        "Refusing to promote HTCondor output symlink: {}".format(source)
+                    )
+
+                relative_path = os.path.relpath(source, self.file_transfer_workspace)
+                if relative_path in self.INTERNAL_OUTPUT_FILES:
+                    continue
+                if self._was_input_symlink(relative_path):
+                    continue
+
+                destination = os.path.join(self.workflow_workspace, relative_path)
+                self._validate_promotion_path(destination)
+                input_signature = self.input_file_signatures.get(relative_path)
+                destination_exists = os.path.lexists(destination)
+
+                if input_signature is not None:
+                    if not destination_exists or os.path.islink(destination):
+                        self._raise_concurrent_modification(relative_path)
+                    if self._file_signature(destination) != input_signature:
+                        if os.path.isfile(destination) and self._files_equal(
+                            source, destination
+                        ):
+                            continue
+                        self._raise_concurrent_modification(relative_path)
+                    if self._files_equal(source, destination):
+                        continue
+                elif destination_exists:
+                    if (
+                        not os.path.islink(destination)
+                        and os.path.isfile(destination)
+                        and self._files_equal(source, destination)
+                    ):
+                        continue
+                    self._raise_concurrent_modification(relative_path)
+
+                os.makedirs(os.path.dirname(destination), exist_ok=True)
+                os.replace(source, destination)
+
+        self.cleanup_file_transfer()
+
     def _get_input_files(self):
         """Get files and dirs from workflow space."""
         input_files = []
@@ -284,7 +525,12 @@ class HTCondorJobManagerCERN(JobManager):
         forbidden_files = [".job.ad", ".machine.ad", ".chirp.config"]
         skip_extensions = (".err", ".log", ".out")
         for item in os.listdir(self.workflow_workspace):
-            if item not in forbidden_files and not item.endswith(skip_extensions):
+            if (
+                item not in forbidden_files
+                and not item.endswith(skip_extensions)
+                and not self._is_file_transfer_directory(item)
+                and not self._is_internal_workflow_path(item)
+            ):
                 input_files.append(item)
 
         return ",".join(input_files)

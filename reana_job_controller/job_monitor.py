@@ -323,6 +323,57 @@ class JobMonitorHTCondorCERN(JobMonitor):
             query += base_query.format(job_id)
         return query[:-2]
 
+    def _finalise_completed_job(self, job_id, job_dict, condor_job, app):
+        """Retrieve a completed HTCondor job and publish its final status."""
+        backend_job_id = job_dict["backend_job_id"]
+        job_manager = job_dict["obj"]
+        exit_code = condor_job.get("ExitCode", condor_job.get("ExitStatus"))
+        final_status = "finished" if exit_code == 0 else "failed"
+
+        if final_status == "failed":
+            logging.info(
+                "Job job_id: {0}, condor_job_id: {1} failed".format(
+                    job_id, backend_job_id
+                )
+            )
+
+        try:
+            app.htcondor_executor.submit(
+                self.job_manager_cls.spool_output,
+                backend_job_id,
+            ).result()
+        except Exception as error:
+            final_status = "failed"
+            logs = (
+                "Failed to retrieve output for REANA job {0} from HTCondor "
+                "job {1}: {2}".format(job_id, backend_job_id, error)
+            )
+            logging.error(logs, exc_info=True)
+            job_manager.stop(backend_job_id)
+            job_manager.cleanup_file_transfer()
+        else:
+            try:
+                job_manager.promote_output()
+            except Exception as error:
+                final_status = "failed"
+                logs = (
+                    "Failed to promote output for REANA job {0} from HTCondor "
+                    "job {1}: {2}".format(job_id, backend_job_id, error)
+                )
+                logging.error(logs, exc_info=True)
+                job_manager.cleanup_file_transfer()
+            else:
+                job_logs = app.htcondor_executor.submit(
+                    self.job_manager_cls.get_logs,
+                    backend_job_id,
+                    workspace=job_manager.workflow_workspace,
+                )
+                logs = job_logs.result()
+
+        store_job_logs(job_id, logs)
+        update_job_status(job_id, final_status)
+        job_dict["deleted"] = True
+
     def watch_jobs(self, job_db, app):
         """Watch currently running HTCondor jobs.
 
@@ -371,38 +422,24 @@ class JobMonitorHTCondorCERN(JobMonitor):
                             logging.error(msg)
                             update_job_status(job_id, "failed")
                             store_job_logs(job_id, msg)
+                            job_dict["obj"].cleanup_file_transfer()
+                            job_dict["deleted"] = True
                         continue
                     if condor_job["JobStatus"] == condorJobStatus["Completed"]:
-                        exit_code = condor_job.get(
-                            "ExitCode", condor_job.get("ExitStatus")
-                        )
-                        if exit_code == 0:
-                            update_job_status(job_id, "finished")
-                        else:
-                            logging.info(
-                                "Job job_id: {0}, condor_job_id: {1} "
-                                "failed".format(job_id, condor_job["ClusterId"])
-                            )
-                            update_job_status(job_id, "failed")
-                        app.htcondor_executor.submit(
-                            self.job_manager_cls.spool_output,
-                            job_dict["backend_job_id"],
-                        ).result()
-                        job_logs = app.htcondor_executor.submit(
-                            self.job_manager_cls.get_logs,
-                            job_dict["backend_job_id"],
-                            workspace=job_db[job_id]["obj"].workflow_workspace,
-                        )
-                        logs = job_logs.result()
-                        store_job_logs(job_id, logs)
-
-                        job_db[job_id]["deleted"] = True
+                        self._finalise_completed_job(job_id, job_dict, condor_job, app)
                     elif (
                         condor_job["JobStatus"] == condorJobStatus["Held"]
                         and int(condor_job["HoldReasonCode"]) not in ignore_hold_codes
                     ):
-                        logging.info("Job was held, will delete and set as failed")
+                        msg = ("HTCondor job {} was held with reason code {}.").format(
+                            condor_job["ClusterId"],
+                            condor_job["HoldReasonCode"],
+                        )
+                        logging.info("%s It will be removed.", msg)
                         self.job_manager_cls.stop(condor_job["ClusterId"])
+                        store_job_logs(job_id, msg)
+                        update_job_status(job_id, "failed")
+                        job_dict["obj"].cleanup_file_transfer()
                         job_db[job_id]["deleted"] = True
                 time.sleep(120)
             except Exception as e:

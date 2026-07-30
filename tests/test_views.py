@@ -18,6 +18,8 @@ from mock import Mock, patch
 from reana_commons.config import REANA_DEFAULT_SNAKEMAKE_ENV_IMAGE
 from reana_commons.job_utils import serialise_job_command
 
+from reana_job_controller.job_db import JOB_DB
+
 
 def test_delete_job(app, mocked_job):
     """Test valid job deletion."""
@@ -77,13 +79,78 @@ def test_delete_job_failed_backend(app, mocked_job):
             assert res.status_code == 502
 
 
+def test_delete_htcondor_job_cleans_file_transfer(app, monkeypatch):
+    """Clean local HTCondor staging after explicitly deleting a job."""
+    job_id = str(uuid.uuid4())
+    job_manager = Mock()
+    backend_manager = Mock()
+    monkeypatch.setitem(
+        JOB_DB,
+        job_id,
+        {
+            "backend_job_id": 123,
+            "obj": job_manager,
+        },
+    )
+    monkeypatch.setitem(
+        app.config["COMPUTE_BACKENDS"],
+        "htcondorcern",
+        lambda: backend_manager,
+    )
+
+    with app.test_client() as client:
+        response = client.delete(
+            url_for("jobs.delete_job", job_id=job_id),
+            query_string={"compute_backend": "htcondorcern"},
+        )
+
+    assert response.status_code == 204
+    backend_manager.stop.assert_called_once_with(123)
+    job_manager.cleanup_file_transfer.assert_called_once_with()
+
+
+def test_shutdown_cleans_htcondor_file_transfer(app):
+    """Clean local HTCondor staging when the controller shuts down."""
+    job_id = str(uuid.uuid4())
+    job_manager = Mock(workflow_workspace="/workspace")
+    backend_manager = Mock()
+    job = {
+        "backend_job_id": 123,
+        "compute_backend": "htcondorcern",
+        "obj": job_manager,
+    }
+    listed_jobs = [{job_id: {"status": "running"}}]
+
+    with (
+        patch.dict(JOB_DB, {job_id: job}, clear=True),
+        patch.dict(
+            "reana_job_controller.config.COMPUTE_BACKENDS",
+            {"htcondorcern": lambda: backend_manager},
+            clear=True,
+        ),
+        patch(
+            "reana_job_controller.rest.retrieve_all_jobs",
+            return_value=listed_jobs,
+        ),
+        patch("reana_job_controller.rest.store_job_logs"),
+        patch("reana_job_controller.rest.update_job_status"),
+        patch("reana_job_controller.rest.job_creation_condition.disable_creation"),
+        app.test_client() as client,
+    ):
+        response = client.get(url_for("jobs.shutdown"))
+
+    assert response.status_code == 200
+    backend_manager.stop.assert_called_once_with(123)
+    job_manager.cleanup_file_transfer.assert_called_once_with()
+
+
 @patch("reana_job_controller.schemas.REANA_KUBERNETES_JOBS_TIMEOUT_LIMIT", "10")
 @patch(
     "reana_job_controller.schemas.REANA_KUBERNETES_JOBS_MAX_USER_TIMEOUT_LIMIT", "20"
 )
 def test_create_job_unsupported_backend(app, job_spec):
     """Test create job with unsupported backend."""
-    fake_backend = "htcondorcern"
+    fake_backend = "unsupported"
     expected_msg = "Job submission failed. Backend {} is not supported.".format(
         fake_backend
     )

@@ -45,6 +45,13 @@ def _build_user_secret(value, secret_type):
     }
 
 
+def test_job_manager_reserves_job_uuid_during_initialisation():
+    """Make the REANA job UUID available before backend submission."""
+    job_manager = JobManager()
+
+    assert str(uuid.UUID(job_manager.job_id)) == job_manager.job_id
+
+
 @pytest.mark.parametrize("kerberos", [False, True])
 def test_execute_kubernetes_job(
     app,

@@ -9,6 +9,7 @@
 """Job Manager."""
 
 import json
+import uuid
 
 from reana_commons.utils import calculate_file_access_time
 from reana_db.database import Session
@@ -54,6 +55,7 @@ class JobManager:
         self.workflow_workspace = workflow_workspace
         self.job_name = job_name
         self.env_vars = self._extend_env_vars(env_vars or {})
+        self.job_id = str(uuid.uuid4())
 
     def execution_hook(fn):
         """Add before execution hooks and DB operations."""
@@ -111,6 +113,7 @@ class JobManager:
     def create_job_in_db(self, backend_job_id):
         """Create job in db."""
         job_db_entry = JobTable(
+            id_=self.job_id,
             backend_job_id=backend_job_id,
             workflow_uuid=self.workflow_uuid,
             status=JobStatus.created,
@@ -126,7 +129,6 @@ class JobManager:
         )
         Session.add(job_db_entry)
         Session.commit()
-        self.job_id = str(job_db_entry.id_)
 
     def cache_job(self):
         """Cache a job."""

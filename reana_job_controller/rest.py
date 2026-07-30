@@ -53,6 +53,13 @@ _SECRETS_CACHE = None
 """Cache for user secrets."""
 
 
+def _cleanup_file_transfer(job_id):
+    """Clean backend-specific local file-transfer state for a job."""
+    cleanup = getattr(JOB_DB[job_id]["obj"], "cleanup_file_transfer", None)
+    if cleanup:
+        cleanup()
+
+
 def get_cached_user_secrets() -> UserSecrets:
     """Return cached user secrets."""
     global _SECRETS_CACHE
@@ -506,6 +513,7 @@ def delete_job(job_id):  # noqa
             backend_job_id = retrieve_backend_job_id(job_id)
             job_manager_cls = current_app.config["COMPUTE_BACKENDS"][compute_backend]()
             job_manager_cls.stop(backend_job_id)
+            _cleanup_file_transfer(job_id)
             return jsonify(), 204
         except ComputingBackendSubmissionError as e:
             return (
@@ -586,6 +594,7 @@ def shutdown():
                 logs = job_manager_cls.get_logs(backend_job_id, workspace=workspace)
                 store_job_logs(job_id, logs)
                 job_manager_cls.stop(backend_job_id)
+                _cleanup_file_transfer(job_id)
                 update_job_status(job_id, JobStatus.stopped.name)
                 # FIXME: ideally also here we would not access the database directly
                 JOB_DB[job_id]["deleted"] = True

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
 # This file is part of REANA.
-# Copyright (C) 2019, 2020, 2021, 2022, 2023, 2024 CERN.
+# Copyright (C) 2019, 2020, 2021, 2022, 2023, 2024, 2026 CERN.
 #
 # REANA is free software; you can redistribute it and/or modify it
 # under the terms of the MIT License; see LICENSE file for more details.
@@ -38,6 +38,217 @@ def test_initialisation(app):
         JobMonitorHTCondorCERN(app=app)
         JobMonitorKubernetes(app=app)
         JobMonitorSlurmCERN(app=app)
+
+
+@pytest.mark.parametrize("exit_code,expected_status", [(0, "finished"), (1, "failed")])
+def test_htcondor_finalises_job_after_promoting_output(exit_code, expected_status):
+    """Publish the final job status only after output has been retrieved."""
+    calls = mock.Mock()
+    app = mock.MagicMock()
+    manager = mock.MagicMock()
+    manager.workflow_workspace = "/workspace"
+    manager.promote_output.side_effect = calls.promote_output
+    job = {
+        "backend_job_id": 123,
+        "deleted": False,
+        "obj": manager,
+    }
+
+    def submit(function, *args, **kwargs):
+        future = mock.Mock()
+        if function == manager.spool_output:
+            future.result.side_effect = calls.retrieve_output
+        else:
+
+            def read_logs():
+                calls.read_logs()
+                return "job logs"
+
+            future.result.side_effect = read_logs
+        return future
+
+    app.htcondor_executor.submit.side_effect = submit
+    with (
+        mock.patch("reana_job_controller.job_monitor.threading"),
+        mock.patch(
+            "reana_job_controller.job_monitor.store_job_logs",
+            side_effect=calls.store_logs,
+        ) as store_job_logs,
+        mock.patch(
+            "reana_job_controller.job_monitor.update_job_status",
+            side_effect=calls.update_status,
+        ) as update_job_status,
+    ):
+        monitor = JobMonitorHTCondorCERN(app=app)
+        monitor.job_manager_cls = manager
+        monitor._finalise_completed_job(
+            "reana-job-id", job, {"ExitCode": exit_code}, app
+        )
+
+    assert calls.mock_calls == [
+        mock.call.retrieve_output(),
+        mock.call.promote_output(),
+        mock.call.read_logs(),
+        mock.call.store_logs("reana-job-id", "job logs"),
+        mock.call.update_status("reana-job-id", expected_status),
+    ]
+    store_job_logs.assert_called_once_with("reana-job-id", "job logs")
+    update_job_status.assert_called_once_with("reana-job-id", expected_status)
+    manager.stop.assert_not_called()
+    assert job["deleted"] is True
+
+
+def test_htcondor_fails_job_when_retrieving_output_fails():
+    """Do not report success when retrieving the HTCondor output fails."""
+    app = mock.MagicMock()
+    manager = mock.MagicMock()
+    manager.workflow_workspace = "/workspace"
+    job = {
+        "backend_job_id": 123,
+        "deleted": False,
+        "obj": manager,
+    }
+    future = mock.Mock()
+    future.result.side_effect = RuntimeError("sandbox transfer failed")
+    app.htcondor_executor.submit.return_value = future
+
+    with (
+        mock.patch("reana_job_controller.job_monitor.threading"),
+        mock.patch("reana_job_controller.job_monitor.store_job_logs") as store_job_logs,
+        mock.patch(
+            "reana_job_controller.job_monitor.update_job_status"
+        ) as update_job_status,
+    ):
+        monitor = JobMonitorHTCondorCERN(app=app)
+        monitor.job_manager_cls = manager
+        monitor._finalise_completed_job("reana-job-id", job, {"ExitCode": 0}, app)
+
+    stored_logs = store_job_logs.call_args.args[1]
+    assert "Failed to retrieve output" in stored_logs
+    assert "sandbox transfer failed" in stored_logs
+    update_job_status.assert_called_once_with("reana-job-id", "failed")
+    assert app.htcondor_executor.submit.call_count == 1
+    manager.stop.assert_called_once_with(123)
+    manager.cleanup_file_transfer.assert_called_once_with()
+    manager.promote_output.assert_not_called()
+    assert job["deleted"] is True
+
+
+def test_htcondor_fails_job_when_promoting_output_fails():
+    """Do not report success when promoting the retrieved output fails."""
+    app = mock.MagicMock()
+    manager = mock.MagicMock()
+    manager.workflow_workspace = "/workspace"
+    manager.promote_output.side_effect = RuntimeError("workspace conflict")
+    job = {"backend_job_id": 123, "deleted": False, "obj": manager}
+    future = mock.Mock()
+    future.result.return_value = None
+    app.htcondor_executor.submit.return_value = future
+
+    with (
+        mock.patch("reana_job_controller.job_monitor.threading"),
+        mock.patch("reana_job_controller.job_monitor.store_job_logs") as store_job_logs,
+        mock.patch(
+            "reana_job_controller.job_monitor.update_job_status"
+        ) as update_job_status,
+    ):
+        monitor = JobMonitorHTCondorCERN(app=app)
+        monitor.job_manager_cls = manager
+        monitor._finalise_completed_job("reana-job-id", job, {"ExitCode": 0}, app)
+
+    stored_logs = store_job_logs.call_args.args[1]
+    assert "Failed to promote output" in stored_logs
+    assert "workspace conflict" in stored_logs
+    update_job_status.assert_called_once_with("reana-job-id", "failed")
+    assert app.htcondor_executor.submit.call_count == 1
+    manager.stop.assert_not_called()
+    manager.cleanup_file_transfer.assert_called_once_with()
+    assert job["deleted"] is True
+
+
+def _watch_one_htcondor_iteration(monitor, job_db, app):
+    """Run one monitor iteration before interrupting its polling loop."""
+    with (
+        mock.patch(
+            "reana_job_controller.job_monitor.time.sleep",
+            side_effect=KeyboardInterrupt,
+        ),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        monitor.watch_jobs(job_db, app)
+
+
+def test_htcondor_cleans_file_transfer_for_job_found_in_history():
+    """Clean local staging when a missing queue job is found in history."""
+    app = mock.MagicMock()
+    query_future = mock.Mock()
+    query_future.result.return_value = []
+    history_future = mock.Mock()
+    history_future.result.return_value = {"ClusterId": 123, "JobStatus": 4}
+    app.htcondor_executor.submit.side_effect = [query_future, history_future]
+    manager = mock.MagicMock()
+    job = {
+        "backend_job_id": 123,
+        "compute_backend": "htcondorcern",
+        "deleted": False,
+        "obj": manager,
+        "status": "running",
+    }
+    job_db = {"reana-job-id": job}
+
+    with (
+        mock.patch("reana_job_controller.job_monitor.threading"),
+        mock.patch("reana_job_controller.job_monitor.store_job_logs") as store_logs,
+        mock.patch(
+            "reana_job_controller.job_monitor.update_job_status"
+        ) as update_status,
+    ):
+        monitor = JobMonitorHTCondorCERN(app=app)
+        monitor.job_manager_cls = mock.MagicMock()
+        _watch_one_htcondor_iteration(monitor, job_db, app)
+
+    update_status.assert_called_once_with("reana-job-id", "failed")
+    store_logs.assert_called_once()
+    manager.cleanup_file_transfer.assert_called_once_with()
+    assert job["deleted"] is True
+
+
+def test_htcondor_cleans_file_transfer_for_held_job():
+    """Fail held jobs and clean their local staging directory."""
+    app = mock.MagicMock()
+    query_future = mock.Mock()
+    query_future.result.return_value = [
+        {"ClusterId": 123, "JobStatus": 5, "HoldReasonCode": 1}
+    ]
+    app.htcondor_executor.submit.return_value = query_future
+    manager = mock.MagicMock()
+    job = {
+        "backend_job_id": 123,
+        "compute_backend": "htcondorcern",
+        "deleted": False,
+        "obj": manager,
+        "status": "running",
+    }
+    job_db = {"reana-job-id": job}
+
+    with (
+        mock.patch("reana_job_controller.job_monitor.threading"),
+        mock.patch("reana_job_controller.job_monitor.store_job_logs") as store_logs,
+        mock.patch(
+            "reana_job_controller.job_monitor.update_job_status"
+        ) as update_status,
+    ):
+        monitor = JobMonitorHTCondorCERN(app=app)
+        monitor.job_manager_cls = mock.MagicMock()
+        _watch_one_htcondor_iteration(monitor, job_db, app)
+
+    monitor.job_manager_cls.stop.assert_called_once_with(123)
+    store_logs.assert_called_once_with(
+        "reana-job-id", "HTCondor job 123 was held with reason code 1."
+    )
+    update_status.assert_called_once_with("reana-job-id", "failed")
+    manager.cleanup_file_transfer.assert_called_once_with()
+    assert job["deleted"] is True
 
 
 @pytest.mark.parametrize(
