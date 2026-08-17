@@ -8,6 +8,7 @@
 
 """Tests for the CERN HTCondor job manager."""
 
+import logging
 import os
 from unittest import mock
 
@@ -344,6 +345,29 @@ def test_prepare_file_transfer_excludes_yadage_engine_state(workspace_manager):
     )
 
 
+def test_prepare_file_transfer_excludes_snakemake_engine_state(workspace_manager):
+    """Do not transfer or snapshot Snakemake's concurrently updated state."""
+    workspace_manager.workflow.type_ = "snakemake"
+    workspace = workspace_manager.workflow_workspace
+    code_directory = os.path.join(workspace, "code")
+    os.makedirs(code_directory)
+    with open(os.path.join(code_directory, "analysis.py"), "w") as analysis:
+        analysis.write("print('hello')")
+    snakemake_state = os.path.join(workspace, ".snakemake", "metadata")
+    os.makedirs(snakemake_state)
+    with open(os.path.join(snakemake_state, "result"), "w") as metadata:
+        metadata.write("engine state")
+
+    with mock.patch.object(workspace_manager, "_copy_wrapper_file"):
+        input_files = workspace_manager._prepare_file_transfer().split(",")
+
+    assert input_files == [code_directory]
+    assert not any(
+        path == ".snakemake" or path.startswith(".snakemake/")
+        for path in workspace_manager.input_file_signatures
+    )
+
+
 def test_promote_output_ignores_returned_yadage_engine_state(workspace_manager):
     """Do not overwrite Yadage state defensively if HTCondor returns it."""
     workspace_manager.workflow.type_ = "yadage"
@@ -372,6 +396,41 @@ def test_promote_output_ignores_returned_yadage_engine_state(workspace_manager):
 
     with open(snapshot_path) as snapshot:
         assert snapshot.read() == "current engine state"
+    with open(os.path.join(workspace, "result.txt")) as result:
+        assert result.read() == "result"
+    assert not os.path.exists(workspace_manager.file_transfer_workspace)
+
+
+def test_promote_output_ignores_returned_snakemake_engine_state(workspace_manager):
+    """Do not overwrite concurrently updated Snakemake state."""
+    workspace_manager.workflow.type_ = "snakemake"
+    workspace = workspace_manager.workflow_workspace
+    snakemake_state = os.path.join(workspace, ".snakemake", "metadata")
+    os.makedirs(snakemake_state)
+    metadata_path = os.path.join(snakemake_state, "result")
+    with open(metadata_path, "w") as metadata:
+        metadata.write("initial engine state")
+
+    with mock.patch.object(workspace_manager, "_copy_wrapper_file"):
+        workspace_manager._prepare_file_transfer()
+
+    with open(metadata_path, "w") as metadata:
+        metadata.write("current engine state")
+    returned_snakemake_state = os.path.join(
+        workspace_manager.file_transfer_workspace, ".snakemake", "metadata"
+    )
+    os.makedirs(returned_snakemake_state)
+    with open(os.path.join(returned_snakemake_state, "result"), "w") as metadata:
+        metadata.write("stale engine state")
+    with open(
+        os.path.join(workspace_manager.file_transfer_workspace, "result.txt"), "w"
+    ) as result:
+        result.write("result")
+
+    workspace_manager.promote_output()
+
+    with open(metadata_path) as metadata:
+        assert metadata.read() == "current engine state"
     with open(os.path.join(workspace, "result.txt")) as result:
         assert result.read() == "result"
     assert not os.path.exists(workspace_manager.file_transfer_workspace)
@@ -475,7 +534,7 @@ def test_promote_output_preserves_input_symlink(workspace_manager):
         os.path.join(workspace_manager.file_transfer_workspace, "input-link"),
         "w",
     ) as returned_file:
-        returned_file.write("modified by job")
+        returned_file.write("input")
 
     workspace_manager.promote_output()
 
@@ -483,6 +542,97 @@ def test_promote_output_preserves_input_symlink(workspace_manager):
     assert os.readlink(input_link) == "target.txt"
     with open(target) as target_file:
         assert target_file.read() == "input"
+
+
+def test_promote_output_rejects_same_size_modified_input_symlink(workspace_manager):
+    """Content-check same-size modifications through an input symlink."""
+    workspace = workspace_manager.workflow_workspace
+    target = os.path.join(workspace, "target.txt")
+    input_link = os.path.join(workspace, "input-link")
+    with open(target, "w") as target_file:
+        target_file.write("input")
+    os.symlink("target.txt", input_link)
+
+    with mock.patch.object(workspace_manager, "_copy_wrapper_file"):
+        workspace_manager._prepare_file_transfer()
+
+    returned_path = os.path.join(
+        workspace_manager.file_transfer_workspace, "input-link"
+    )
+    with open(returned_path, "w") as returned_file:
+        returned_file.write("other")
+
+    assert os.path.getsize(returned_path) == os.path.getsize(target)
+    with pytest.raises(RuntimeError, match="concurrently modified"):
+        workspace_manager.promote_output()
+
+    assert os.path.islink(input_link)
+    with open(target) as target_file:
+        assert target_file.read() == "input"
+    assert os.path.isdir(workspace_manager.file_transfer_workspace)
+
+
+def test_promote_output_rejects_input_symlink_with_missing_target(
+    workspace_manager,
+):
+    """Fail clearly when an input symlink target disappears."""
+    workspace = workspace_manager.workflow_workspace
+    target = os.path.join(workspace, "target.txt")
+    input_link = os.path.join(workspace, "input-link")
+    with open(target, "w") as target_file:
+        target_file.write("input")
+    os.symlink("target.txt", input_link)
+
+    with mock.patch.object(workspace_manager, "_copy_wrapper_file"):
+        workspace_manager._prepare_file_transfer()
+
+    os.unlink(target)
+    with open(
+        os.path.join(workspace_manager.file_transfer_workspace, "input-link"),
+        "w",
+    ) as returned_file:
+        returned_file.write("input")
+
+    with pytest.raises(RuntimeError, match="concurrently modified"):
+        workspace_manager.promote_output()
+
+    assert os.path.islink(input_link)
+    assert os.path.isdir(workspace_manager.file_transfer_workspace)
+
+
+def test_promote_output_warns_when_skipping_input_directory_symlink(
+    workspace_manager, caplog
+):
+    """Warn when discarding returned content beneath a directory symlink."""
+    workspace = workspace_manager.workflow_workspace
+    target = os.path.join(workspace, "target")
+    input_link = os.path.join(workspace, "input-link")
+    os.makedirs(target)
+    with open(os.path.join(target, "input.txt"), "w") as input_file:
+        input_file.write("input")
+    os.symlink("target", input_link)
+
+    with mock.patch.object(workspace_manager, "_copy_wrapper_file"):
+        workspace_manager._prepare_file_transfer()
+
+    returned_directory = os.path.join(
+        workspace_manager.file_transfer_workspace, "input-link"
+    )
+    os.makedirs(returned_directory)
+    with open(os.path.join(returned_directory, "input.txt"), "w") as input_file:
+        input_file.write("modified by job")
+
+    with caplog.at_level(logging.WARNING):
+        workspace_manager.promote_output()
+
+    assert (
+        "Skipping returned HTCondor content rooted at input directory symlink"
+        in caplog.text
+    )
+    assert os.path.islink(input_link)
+    with open(os.path.join(target, "input.txt")) as input_file:
+        assert input_file.read() == "input"
+    assert not os.path.exists(workspace_manager.file_transfer_workspace)
 
 
 def test_promote_output_rejects_concurrent_modification(workspace_manager):

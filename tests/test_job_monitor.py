@@ -46,6 +46,7 @@ def test_htcondor_finalises_job_after_promoting_output(exit_code, expected_statu
     calls = mock.Mock()
     app = mock.MagicMock()
     manager = mock.MagicMock()
+    manager.file_transfer_workspace = "/workspace/.file-transfer"
     manager.workflow_workspace = "/workspace"
     manager.promote_output.side_effect = calls.promote_output
     job = {
@@ -87,13 +88,18 @@ def test_htcondor_finalises_job_after_promoting_output(exit_code, expected_statu
 
     assert calls.mock_calls == [
         mock.call.retrieve_output(),
-        mock.call.promote_output(),
         mock.call.read_logs(),
+        mock.call.promote_output(),
         mock.call.store_logs("reana-job-id", "job logs"),
         mock.call.update_status("reana-job-id", expected_status),
     ]
     store_job_logs.assert_called_once_with("reana-job-id", "job logs")
     update_job_status.assert_called_once_with("reana-job-id", expected_status)
+    assert app.htcondor_executor.submit.call_args_list[1] == mock.call(
+        manager.get_logs,
+        123,
+        workspace=manager.file_transfer_workspace,
+    )
     manager.stop.assert_not_called()
     assert job["deleted"] is True
 
@@ -138,12 +144,19 @@ def test_htcondor_fails_job_when_promoting_output_fails():
     """Do not report success when promoting the retrieved output fails."""
     app = mock.MagicMock()
     manager = mock.MagicMock()
+    manager.file_transfer_workspace = "/workspace/.file-transfer"
     manager.workflow_workspace = "/workspace"
     manager.promote_output.side_effect = RuntimeError("workspace conflict")
     job = {"backend_job_id": 123, "deleted": False, "obj": manager}
-    future = mock.Mock()
-    future.result.return_value = None
-    app.htcondor_executor.submit.return_value = future
+
+    def submit(function, *args, **kwargs):
+        future = mock.Mock()
+        future.result.return_value = (
+            None if function == manager.spool_output else "captured job logs"
+        )
+        return future
+
+    app.htcondor_executor.submit.side_effect = submit
 
     with (
         mock.patch("reana_job_controller.job_monitor.threading"),
@@ -157,12 +170,56 @@ def test_htcondor_fails_job_when_promoting_output_fails():
         monitor._finalise_completed_job("reana-job-id", job, {"ExitCode": 0}, app)
 
     stored_logs = store_job_logs.call_args.args[1]
+    assert stored_logs.startswith("captured job logs\n")
     assert "Failed to promote output" in stored_logs
     assert "workspace conflict" in stored_logs
     update_job_status.assert_called_once_with("reana-job-id", "failed")
-    assert app.htcondor_executor.submit.call_count == 1
+    assert app.htcondor_executor.submit.call_count == 2
+    assert app.htcondor_executor.submit.call_args_list[1] == mock.call(
+        manager.get_logs,
+        123,
+        workspace=manager.file_transfer_workspace,
+    )
     manager.stop.assert_not_called()
     manager.cleanup_file_transfer.assert_called_once_with()
+    assert job["deleted"] is True
+
+
+def test_htcondor_fails_job_when_capturing_output_logs_fails():
+    """Finalise the job even when reading the retrieved logs raises."""
+    app = mock.MagicMock()
+    manager = mock.MagicMock()
+    manager.file_transfer_workspace = "/workspace/.file-transfer"
+    job = {"backend_job_id": 123, "deleted": False, "obj": manager}
+
+    def submit(function, *args, **kwargs):
+        future = mock.Mock()
+        if function == manager.spool_output:
+            future.result.return_value = None
+        else:
+            future.result.side_effect = RuntimeError("cannot read sandbox logs")
+        return future
+
+    app.htcondor_executor.submit.side_effect = submit
+
+    with (
+        mock.patch("reana_job_controller.job_monitor.threading"),
+        mock.patch("reana_job_controller.job_monitor.store_job_logs") as store_job_logs,
+        mock.patch(
+            "reana_job_controller.job_monitor.update_job_status"
+        ) as update_job_status,
+    ):
+        monitor = JobMonitorHTCondorCERN(app=app)
+        monitor.job_manager_cls = manager
+        monitor._finalise_completed_job("reana-job-id", job, {"ExitCode": 0}, app)
+
+    stored_logs = store_job_logs.call_args.args[1]
+    assert "Failed to capture output logs" in stored_logs
+    assert "cannot read sandbox logs" in stored_logs
+    update_job_status.assert_called_once_with("reana-job-id", "failed")
+    assert app.htcondor_executor.submit.call_count == 2
+    manager.promote_output.assert_called_once_with()
+    manager.cleanup_file_transfer.assert_not_called()
     assert job["deleted"] is True
 
 

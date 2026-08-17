@@ -43,7 +43,10 @@ class HTCondorJobManagerCERN(JobManager):
         "_condor_stdout",
         "condor_exec.exe",
     }
-    INTERNAL_WORKFLOW_PATHS = {"yadage": {"_yadage"}}
+    INTERNAL_WORKFLOW_PATHS = {
+        "snakemake": {".snakemake"},
+        "yadage": {"_yadage"},
+    }
 
     MAX_NUM_RETRIES = 3
     """Maximum number of tries used for getting schedd, job submission and
@@ -434,6 +437,18 @@ class HTCondorJobManagerCERN(JobManager):
             for part_count in range(1, len(path_parts) + 1)
         )
 
+    def _verify_unchanged_input_symlink(self, relative_path, returned_path):
+        """Reject changed content returned for an input file symlink."""
+        destination = os.path.join(self.workflow_workspace, relative_path)
+        if not os.path.islink(destination) or not os.path.isfile(destination):
+            self._raise_concurrent_modification(relative_path)
+        try:
+            files_equal = self._files_equal(returned_path, destination)
+        except OSError:
+            files_equal = False
+        if not files_equal:
+            self._raise_concurrent_modification(relative_path)
+
     @staticmethod
     def _raise_concurrent_modification(relative_path):
         """Raise an output conflict for a locally changed workspace path."""
@@ -462,6 +477,11 @@ class HTCondorJobManagerCERN(JobManager):
                 source = os.path.join(root, directory)
                 relative_path = os.path.relpath(source, self.file_transfer_workspace)
                 if self._was_input_symlink(relative_path):
+                    logging.warning(
+                        "Skipping returned HTCondor content rooted at input "
+                        "directory symlink: %s",
+                        relative_path,
+                    )
                     directories.remove(directory)
                     continue
                 if os.path.islink(source):
@@ -486,6 +506,7 @@ class HTCondorJobManagerCERN(JobManager):
                 if relative_path in self.INTERNAL_OUTPUT_FILES:
                     continue
                 if self._was_input_symlink(relative_path):
+                    self._verify_unchanged_input_symlink(relative_path, source)
                     continue
 
                 destination = os.path.join(self.workflow_workspace, relative_path)

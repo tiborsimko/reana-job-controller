@@ -329,6 +329,7 @@ class JobMonitorHTCondorCERN(JobMonitor):
         job_manager = job_dict["obj"]
         exit_code = condor_job.get("ExitCode", condor_job.get("ExitStatus"))
         final_status = "finished" if exit_code == 0 else "failed"
+        logs = ""
 
         if final_status == "failed":
             logging.info(
@@ -353,22 +354,30 @@ class JobMonitorHTCondorCERN(JobMonitor):
             job_manager.cleanup_file_transfer()
         else:
             try:
-                job_manager.promote_output()
-            except Exception as error:
-                final_status = "failed"
-                logs = (
-                    "Failed to promote output for REANA job {0} from HTCondor "
-                    "job {1}: {2}".format(job_id, backend_job_id, error)
-                )
-                logging.error(logs, exc_info=True)
-                job_manager.cleanup_file_transfer()
-            else:
                 job_logs = app.htcondor_executor.submit(
                     self.job_manager_cls.get_logs,
                     backend_job_id,
-                    workspace=job_manager.workflow_workspace,
+                    workspace=job_manager.file_transfer_workspace,
                 )
                 logs = job_logs.result()
+            except Exception as error:
+                final_status = "failed"
+                logs = (
+                    "Failed to capture output logs for REANA job {0} from "
+                    "HTCondor job {1}: {2}".format(job_id, backend_job_id, error)
+                )
+                logging.error(logs, exc_info=True)
+            try:
+                job_manager.promote_output()
+            except Exception as error:
+                final_status = "failed"
+                promotion_error = (
+                    "Failed to promote output for REANA job {0} from HTCondor "
+                    "job {1}: {2}".format(job_id, backend_job_id, error)
+                )
+                logs = "{0}\n{1}".format(logs, promotion_error)
+                logging.error(promotion_error, exc_info=True)
+                job_manager.cleanup_file_transfer()
 
         store_job_logs(job_id, logs)
         update_job_status(job_id, final_status)
