@@ -2,10 +2,7 @@ diff --git a/lib/Authen/Krb5.xs b/lib/Authen/Krb5.xs
 index 3fa1e91..090782e 100644
 --- a/lib/Authen/Krb5.xs
 +++ b/lib/Authen/Krb5.xs
-@@ -648,6 +648,16 @@ krb5_recvauth(auth_context,fh,version,server,keytab)
- 	sv_setref_pv(ST(0),"Authen::Krb5::Ticket",(void*)ticket);
- 	XSRETURN(1);
- 
+@@ -650,0 +651,10 @@ krb5_recvauth(auth_context,fh,version,server,keytab)
 +void
 +cc_copy_creds(incc,outcc)
 +	Authen::Krb5::Ccache incc
@@ -16,6 +13,3 @@ index 3fa1e91..090782e 100644
 +	if (err) XSRETURN_UNDEF;
 +	XSRETURN_YES;
 +
- 
- MODULE = Authen::Krb5	PACKAGE = Authen::Krb5::Principal
- 
