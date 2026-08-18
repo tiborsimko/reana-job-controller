@@ -4,6 +4,180 @@
 
 # Changelog
 
+## [0.95.0](https://github.com/tiborsimko/reana-job-controller/compare/v0.9.4...0.95.0) (2026-08-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **python:** drop support for Python 3.6 and 3.7
+
+### Build
+
+* **certificates:** update expired CERN Grid CA certificate ([#440](https://github.com/tiborsimko/reana-job-controller/issues/440)) ([8d6539a](https://github.com/tiborsimko/reana-job-controller/commit/8d6539a94af035aca1191c9a6a7ff43791a3c930)), closes [#439](https://github.com/tiborsimko/reana-job-controller/issues/439)
+* **deps:** update reana-auth-vomsproxy to 1.3.0 ([#466](https://github.com/tiborsimko/reana-job-controller/issues/466)) ([72e9ea1](https://github.com/tiborsimko/reana-job-controller/commit/72e9ea1442d2b6cf7d466d0701e269fda1e15b22))
+* **deps:** update reana-auth-vomsproxy to 1.3.1 ([#486](https://github.com/tiborsimko/reana-job-controller/issues/486)) ([1827c82](https://github.com/tiborsimko/reana-job-controller/commit/1827c8248793d1c08a9843904fccf04bb4fba30b))
+* **deps:** update reana-auth-vomsproxy to 1.3.1 ([#486](https://github.com/tiborsimko/reana-job-controller/issues/486)) ([dacbfa0](https://github.com/tiborsimko/reana-job-controller/commit/dacbfa03490d0374701664e77dbaf70a8a00e3fc))
+* **docker:** non-editable submodules in "latest" mode ([#416](https://github.com/tiborsimko/reana-job-controller/issues/416)) ([3bdda63](https://github.com/tiborsimko/reana-job-controller/commit/3bdda6367d9a4682028a2a7df7268e4c9b42ef6c))
+* **docker:** pin setuptools 70 ([#465](https://github.com/tiborsimko/reana-job-controller/issues/465)) ([c593d9b](https://github.com/tiborsimko/reana-job-controller/commit/c593d9bc84763f142573396be48c762eefa8f6ec))
+* **docker:** pin setuptools to v70 ([#459](https://github.com/tiborsimko/reana-job-controller/issues/459)) ([1288088](https://github.com/tiborsimko/reana-job-controller/commit/12880887c8f48f1085fcc8bab6d0896e16e97e53))
+* **docker:** replace alien with rpm2cpio for RPM conversion ([#507](https://github.com/tiborsimko/reana-job-controller/issues/507)) ([0d418ce](https://github.com/tiborsimko/reana-job-controller/commit/0d418cecded89ada4c7f414fc3a3b46e0c0369e9))
+* **docker:** upgrade to Ubuntu 24.04 and Python 3.12 ([#458](https://github.com/tiborsimko/reana-job-controller/issues/458)) ([f65641a](https://github.com/tiborsimko/reana-job-controller/commit/f65641ab1e4d0e7c215a480bcacfa8539c1c4182))
+* **docker:** use uWSGI server instead of Flask ([#517](https://github.com/tiborsimko/reana-job-controller/issues/517)) ([a8e49b4](https://github.com/tiborsimko/reana-job-controller/commit/a8e49b4c22b8eb57fb221b308ac32459697e4302))
+* **python:** add minimal `pyproject.toml` ([#459](https://github.com/tiborsimko/reana-job-controller/issues/459)) ([c84ceaf](https://github.com/tiborsimko/reana-job-controller/commit/c84ceaf21c3e3b5b079765d9ce60da0746d9e506))
+* **python:** avoid using requirements.in ([#448](https://github.com/tiborsimko/reana-job-controller/issues/448)) ([48c58d9](https://github.com/tiborsimko/reana-job-controller/commit/48c58d9d9f3fc66e0ccbb2c67ecaac5892d83d9c))
+* **python:** bump all required packages as of 2024-03-04 ([#442](https://github.com/tiborsimko/reana-job-controller/issues/442)) ([de119eb](https://github.com/tiborsimko/reana-job-controller/commit/de119eb8f663dcfe1a126747a7c404e39ece47c0))
+* **python:** bump shared REANA packages as of 2024-03-04 ([#442](https://github.com/tiborsimko/reana-job-controller/issues/442)) ([fc77628](https://github.com/tiborsimko/reana-job-controller/commit/fc776284abe15030581d5adf4aa575f4f3a1c756))
+* **python:** bump shared REANA packages as of 2024-11-28 ([#477](https://github.com/tiborsimko/reana-job-controller/issues/477)) ([9cdd06c](https://github.com/tiborsimko/reana-job-controller/commit/9cdd06c72faa5ded628b2766113ab37ac06f5868))
+* **python:** drop support for Python 3.6 and 3.7 ([#455](https://github.com/tiborsimko/reana-job-controller/issues/455)) ([20899e7](https://github.com/tiborsimko/reana-job-controller/commit/20899e79389becfea92ac761c211076b21f82080))
+* **python:** pin paramiko below 5 to keep GSSAPI ([#528](https://github.com/tiborsimko/reana-job-controller/issues/528)) ([a13bf31](https://github.com/tiborsimko/reana-job-controller/commit/a13bf319c8b541e5ef7d35c696a7f098bd76db97))
+* **python:** pin setuptools below 81 ([#500](https://github.com/tiborsimko/reana-job-controller/issues/500)) ([b9c76c4](https://github.com/tiborsimko/reana-job-controller/commit/b9c76c4b7ffbb6f98ed5828468bb6ba465b29b7d))
+* **python:** remove deprecated `pytest-runner` ([#459](https://github.com/tiborsimko/reana-job-controller/issues/459)) ([e5fef3f](https://github.com/tiborsimko/reana-job-controller/commit/e5fef3fa66ef5255ec2ff02477bbc3d63f096b31))
+* **python:** upgrade to Flask 3.x ([#514](https://github.com/tiborsimko/reana-job-controller/issues/514)) ([4258c39](https://github.com/tiborsimko/reana-job-controller/commit/4258c395c24b73abe7dc73a7a9259b7d811f9218))
+* **python:** use optional deps instead of `tests_require` ([#459](https://github.com/tiborsimko/reana-job-controller/issues/459)) ([6a3acdf](https://github.com/tiborsimko/reana-job-controller/commit/6a3acdf0dd800770a14ec8992674419c92b47001))
+
+
+### Features
+
+* **backends:** add new Compute4PUNCH backend ([#430](https://github.com/tiborsimko/reana-job-controller/issues/430)) ([4243252](https://github.com/tiborsimko/reana-job-controller/commit/42432522c8d9dd5e4ee908a16b1be87046908e08))
+* **config:** allow customising minimum Kubernetes job user ID ([#518](https://github.com/tiborsimko/reana-job-controller/issues/518)) ([029d405](https://github.com/tiborsimko/reana-job-controller/commit/029d405cad000465a6d3a858f73afa12ad411358))
+* **dask:** add DASK_SCHEDULER_URI environment variable ([#464](https://github.com/tiborsimko/reana-job-controller/issues/464)) ([6cf4fc0](https://github.com/tiborsimko/reana-job-controller/commit/6cf4fc0837be126f657ba162642533df0522fd03))
+* **docker:** support HTCondor submission on ARM64 ([#530](https://github.com/tiborsimko/reana-job-controller/issues/530)) ([50ebd2a](https://github.com/tiborsimko/reana-job-controller/commit/50ebd2a162f081d7e16243b4ab58ab065d7125b3))
+* **htcondorcern:** add CPU/memory/disk/requirements hints ([#521](https://github.com/tiborsimko/reana-job-controller/issues/521)) ([88bc106](https://github.com/tiborsimko/reana-job-controller/commit/88bc106c878bcc95da5c09b17e5c8a72f2863607))
+* **job_manager:** log pod errors as warnings ([#468](https://github.com/tiborsimko/reana-job-controller/issues/468)) ([88b0acb](https://github.com/tiborsimko/reana-job-controller/commit/88b0acbb8ae6a40889314f2dc68394561db4dccb))
+* **job_monitor:** log pod errors and disruptions as warnings ([#468](https://github.com/tiborsimko/reana-job-controller/issues/468)) ([db9c258](https://github.com/tiborsimko/reana-job-controller/commit/db9c258f8b0c55c899ad1b457fc260ff8a1aa820))
+* **job-manager:** add `user-uuid` label to runtime job pods ([#496](https://github.com/tiborsimko/reana-job-controller/issues/496)) ([a3479a1](https://github.com/tiborsimko/reana-job-controller/commit/a3479a1ab5a2747595aacc6ed86e6831a0c286c8))
+* **job-manager:** add Kueue scheduling option for user workloads ([#492](https://github.com/tiborsimko/reana-job-controller/issues/492)) ([f014442](https://github.com/tiborsimko/reana-job-controller/commit/f0144421bdd280f4c0a4f919b3af98b17d66e4c5))
+* **kubernetes:** add resource settings in Kubernetes jobs ([#484](https://github.com/tiborsimko/reana-job-controller/issues/484)) ([1827c82](https://github.com/tiborsimko/reana-job-controller/commit/1827c8248793d1c08a9843904fccf04bb4fba30b))
+* **kubernetes:** add resource settings in Kubernetes jobs ([#484](https://github.com/tiborsimko/reana-job-controller/issues/484)) ([4753ce2](https://github.com/tiborsimko/reana-job-controller/commit/4753ce227efa2bd5b48046d0e650569a0c91abf4))
+* **kubernetes:** set explicit runAsNonRoot on job pods ([#519](https://github.com/tiborsimko/reana-job-controller/issues/519)) ([bd91b2b](https://github.com/tiborsimko/reana-job-controller/commit/bd91b2b5823104599c93636a7f7ddb02fc39ad19))
+* **rest:** reject unvetted images at job submission ([#523](https://github.com/tiborsimko/reana-job-controller/issues/523)) ([ec85ea4](https://github.com/tiborsimko/reana-job-controller/commit/ec85ea4b475277dde5b19bee96d8697fa43ef535))
+* **runtime:** bootstrap job-controller as non-root ([#527](https://github.com/tiborsimko/reana-job-controller/issues/527)) ([8fd6e80](https://github.com/tiborsimko/reana-job-controller/commit/8fd6e808b72da289264abb273c1e6073a3089449))
+* **shutdown:** stop all running jobs before stopping workflow ([#423](https://github.com/tiborsimko/reana-job-controller/issues/423)) ([866675b](https://github.com/tiborsimko/reana-job-controller/commit/866675b7288e840130cfee851f4a248a9ae2617d))
+* **slurmcern:** cache SIF images across workflows ([#528](https://github.com/tiborsimko/reana-job-controller/issues/528)) ([6b7cacf](https://github.com/tiborsimko/reana-job-controller/commit/6b7cacfbf6e564aa2f333216e35afac31709901e))
+* **utils:** add multiline log formatter ([#468](https://github.com/tiborsimko/reana-job-controller/issues/468)) ([d40538a](https://github.com/tiborsimko/reana-job-controller/commit/d40538a48c495ba6a4747e2759556e0476a6a3dd))
+
+
+### Bug fixes
+
+* **config:** read secret key from env ([#476](https://github.com/tiborsimko/reana-job-controller/issues/476)) ([1b5aa98](https://github.com/tiborsimko/reana-job-controller/commit/1b5aa98b0ed76ea614dac1209ba23b366d417d9f))
+* **config:** update reana-auth-vomsproxy to 1.2.1 to fix WLCG IAM ([#457](https://github.com/tiborsimko/reana-job-controller/issues/457)) ([132868f](https://github.com/tiborsimko/reana-job-controller/commit/132868f4824a0f4049febf17c90bea0df838e724))
+* **config:** update reana-auth-vomsproxy to 1.3.1 to fix WLCG IAM ([#481](https://github.com/tiborsimko/reana-job-controller/issues/481)) ([48c362f](https://github.com/tiborsimko/reana-job-controller/commit/48c362fc975d9ee0e18af2f4fcd5ede6ed923134))
+* **config:** use glob for egg-info in flake8 exclude ([#516](https://github.com/tiborsimko/reana-job-controller/issues/516)) ([fcd7a71](https://github.com/tiborsimko/reana-job-controller/commit/fcd7a71fec16b095daa3667e93a2b1b79f8e934e))
+* **config:** use KUEUE_ENABLED consistently ([#510](https://github.com/tiborsimko/reana-job-controller/issues/510)) ([336b52e](https://github.com/tiborsimko/reana-job-controller/commit/336b52e8550fce41179e1cfb86d62d0db73912b9))
+* **database:** limit the number of open database connections ([#437](https://github.com/tiborsimko/reana-job-controller/issues/437)) ([980f749](https://github.com/tiborsimko/reana-job-controller/commit/980f74982b75176c5958f09bc581e941cdf44310))
+* **git:** update .gitignore to exclude modules directory ([#520](https://github.com/tiborsimko/reana-job-controller/issues/520)) ([627c09e](https://github.com/tiborsimko/reana-job-controller/commit/627c09ed2bb0c8ac08721a0f41118e316ad60407))
+* **htcondorcern:** harden staged output handling ([#530](https://github.com/tiborsimko/reana-job-controller/issues/530)) ([e7eb531](https://github.com/tiborsimko/reana-job-controller/commit/e7eb531bba194f3bbdd1f32976728c42570c2713))
+* **htcondorcern:** run provided command in unpacked image ([#474](https://github.com/tiborsimko/reana-job-controller/issues/474)) ([9cda591](https://github.com/tiborsimko/reana-job-controller/commit/9cda591affaa1f821409961ec4e379e1bf5fa248)), closes [#471](https://github.com/tiborsimko/reana-job-controller/issues/471)
+* **htcondorcern:** stage returned job outputs ([#530](https://github.com/tiborsimko/reana-job-controller/issues/530)) ([7ad17b8](https://github.com/tiborsimko/reana-job-controller/commit/7ad17b8d114b56d5be97a56618970f2091439033))
+* **htcondorcern:** support multiline commands ([#474](https://github.com/tiborsimko/reana-job-controller/issues/474)) ([eb07aa9](https://github.com/tiborsimko/reana-job-controller/commit/eb07aa9b7b03d38dd47cd004ff8b48440ad45c2a)), closes [#470](https://github.com/tiborsimko/reana-job-controller/issues/470)
+* **job-manager:** default job env_vars to empty dictionary ([#528](https://github.com/tiborsimko/reana-job-controller/issues/528)) ([4ce5025](https://github.com/tiborsimko/reana-job-controller/commit/4ce5025c8338fa3d52fbada9c11f36c5b17fa4dc))
+* **kubernetes:** avoid privilege escalation in Kubernetes jobs ([#476](https://github.com/tiborsimko/reana-job-controller/issues/476)) ([389f0ea](https://github.com/tiborsimko/reana-job-controller/commit/389f0ea9606d4ac5fa24458b7cef39e8ab430c64))
+* **kubernetes:** bypass kubernetes 36 pod log deserialiser ([#522](https://github.com/tiborsimko/reana-job-controller/issues/522)) ([11a222e](https://github.com/tiborsimko/reana-job-controller/commit/11a222e153f4b4c8987c83a34ef837235bab02b8))
+* **slurmcern:** preserve Kerberos host for GSSAPI ([#528](https://github.com/tiborsimko/reana-job-controller/issues/528)) ([393bc66](https://github.com/tiborsimko/reana-job-controller/commit/393bc66666221d8c909a23f582e1f16f84fc6e88))
+* **slurmcern:** reuse pulled container images ([#528](https://github.com/tiborsimko/reana-job-controller/issues/528)) ([7f0855d](https://github.com/tiborsimko/reana-job-controller/commit/7f0855d097020dff5a64033d6b880594d667eef1))
+* **slurmcern:** update default partition to photon ([#528](https://github.com/tiborsimko/reana-job-controller/issues/528)) ([8fdde05](https://github.com/tiborsimko/reana-job-controller/commit/8fdde05067e13a197f09e23c8657cdad016d8c8d))
+
+
+### Performance improvements
+
+* **cache:** avoid caching jobs when the cache is disabled ([#435](https://github.com/tiborsimko/reana-job-controller/issues/435)) ([553468f](https://github.com/tiborsimko/reana-job-controller/commit/553468f55f6b63cebba45ccd460593131e5dcfea)), closes [#422](https://github.com/tiborsimko/reana-job-controller/issues/422)
+* **config:** make closing of database connections optional ([#463](https://github.com/tiborsimko/reana-job-controller/issues/463)) ([13738ad](https://github.com/tiborsimko/reana-job-controller/commit/13738ad101ba6b02c2cceac0ae9a40b279d75cb9))
+* **secrets:** avoid extraneous refetching of user secrets ([#451](https://github.com/tiborsimko/reana-job-controller/issues/451)) ([e046989](https://github.com/tiborsimko/reana-job-controller/commit/e046989ad11b95456e0b68543859bf66f96cc5fd))
+
+
+### Code refactoring
+
+* **db:** set job status also in the main database ([#423](https://github.com/tiborsimko/reana-job-controller/issues/423)) ([9d6fc99](https://github.com/tiborsimko/reana-job-controller/commit/9d6fc99063deb468fe9d45d9ad626c745c7bd827))
+* **docs:** move from reST to Markdown ([#428](https://github.com/tiborsimko/reana-job-controller/issues/428)) ([4732884](https://github.com/tiborsimko/reana-job-controller/commit/4732884a3da52694fb86d72873eceef3ad2deb27))
+* **htcondorcern:** migrate Python bindings to htcondor2 ([#530](https://github.com/tiborsimko/reana-job-controller/issues/530)) ([dbfe697](https://github.com/tiborsimko/reana-job-controller/commit/dbfe697dd090fd789ae0e8c3f1c24d8a98aad2ad))
+* **monitor:** centralise logs and status updates ([#423](https://github.com/tiborsimko/reana-job-controller/issues/423)) ([3685b01](https://github.com/tiborsimko/reana-job-controller/commit/3685b01a57e1d0b1bd363534ff331b988e04719e))
+* **monitor:** move fetching of logs to job-manager ([#423](https://github.com/tiborsimko/reana-job-controller/issues/423)) ([1fc117e](https://github.com/tiborsimko/reana-job-controller/commit/1fc117ebb3dd908a01ee3fd539fa24a07cdb4d16))
+* **pytest:** drop pytest-reana for reana-commons[tests] ([#515](https://github.com/tiborsimko/reana-job-controller/issues/515)) ([680d1d2](https://github.com/tiborsimko/reana-job-controller/commit/680d1d2a4d933d3c0577c9d5c8d63191a882b54d))
+
+
+### Code style
+
+* **black:** format with black v24 ([#426](https://github.com/tiborsimko/reana-job-controller/issues/426)) ([8a2757e](https://github.com/tiborsimko/reana-job-controller/commit/8a2757ee8bf52d1d5189f1dd1d690cb8922599cb))
+* **docker:** clean Kerberos patch whitespace ([#530](https://github.com/tiborsimko/reana-job-controller/issues/530)) ([cf09d33](https://github.com/tiborsimko/reana-job-controller/commit/cf09d3315dd28e1129c0253fe8595d7525adcfc6))
+* **python:** adapt code base to the new black version ([#500](https://github.com/tiborsimko/reana-job-controller/issues/500)) ([4a3033e](https://github.com/tiborsimko/reana-job-controller/commit/4a3033e89ca7512558686788520fece93b6d3d9a))
+
+
+### Test suite
+
+* adding stop k8s job test ([8ca36bd](https://github.com/tiborsimko/reana-job-controller/commit/8ca36bd5bde461e6f85cf0a78f9588eba259047b))
+* adds requirements_dev for Travis ([6c8adc0](https://github.com/tiborsimko/reana-job-controller/commit/6c8adc0d02b2852dbf79e1e82324c67c92d793f0))
+* **kubernetes:** expect default UID as integer ([#528](https://github.com/tiborsimko/reana-job-controller/issues/528)) ([250912a](https://github.com/tiborsimko/reana-job-controller/commit/250912a1a2b681ab388c4fed5a4910d7480e172e))
+* **pytest:** adapt to fixture changes from default_user to user0 ([#469](https://github.com/tiborsimko/reana-job-controller/issues/469)) ([891aeab](https://github.com/tiborsimko/reana-job-controller/commit/891aeabed8495e1ac086233e4ea8e4e4001062ca))
+
+
+### Continuous integration
+
+* **actions:** update GitHub actions due to Node 16 deprecation ([#447](https://github.com/tiborsimko/reana-job-controller/issues/447)) ([f4f955c](https://github.com/tiborsimko/reana-job-controller/commit/f4f955c3c7eb02f3f75081fb9882931cc5165a05))
+* add hadolint and flake8 linters ([4ad0ede](https://github.com/tiborsimko/reana-job-controller/commit/4ad0eded2da54fd92f9da7b4ac03fb6861cb1e06))
+* added github actions workflow ([67ea0ed](https://github.com/tiborsimko/reana-job-controller/commit/67ea0ed5c533c9a04213d8dc31a9421db69dc804))
+* **commitlint:** addition of commit message linter ([#417](https://github.com/tiborsimko/reana-job-controller/issues/417)) ([f547d3b](https://github.com/tiborsimko/reana-job-controller/commit/f547d3bc25f438203252ea149cf6c6e5d2428189))
+* **commitlint:** allow release commit style ([#443](https://github.com/tiborsimko/reana-job-controller/issues/443)) ([0fc9794](https://github.com/tiborsimko/reana-job-controller/commit/0fc9794bfbe2799bb9666ec5b2ff1dd15def8c34))
+* **commitlint:** check for the presence of concrete PR number ([#425](https://github.com/tiborsimko/reana-job-controller/issues/425)) ([35bc1c5](https://github.com/tiborsimko/reana-job-controller/commit/35bc1c5acb1aa8ff51689142a007da66e49d8d2b))
+* **commitlint:** fix local running of commit linter on macOS ([#487](https://github.com/tiborsimko/reana-job-controller/issues/487)) ([7cd4707](https://github.com/tiborsimko/reana-job-controller/commit/7cd4707b5fac76cb671a67d7af102cd1db543442))
+* **commitlint:** improve checking of merge commits ([#458](https://github.com/tiborsimko/reana-job-controller/issues/458)) ([f646fbe](https://github.com/tiborsimko/reana-job-controller/commit/f646fbe31a990939af44318b87c0e27ac1f4bc94))
+* **docker:** run containerised tests as root on Darwin ([#528](https://github.com/tiborsimko/reana-job-controller/issues/528)) ([e0f4501](https://github.com/tiborsimko/reana-job-controller/commit/e0f45011fc346c3eb4959c722d06e4c98332fa6f))
+* **docker:** skip false positive secret check ([#528](https://github.com/tiborsimko/reana-job-controller/issues/528)) ([e794e25](https://github.com/tiborsimko/reana-job-controller/commit/e794e25ee1b081d12630d7ed1a2bb6ad30152734))
+* **jsonlint:** add JSON linting ([#491](https://github.com/tiborsimko/reana-job-controller/issues/491)) ([872a983](https://github.com/tiborsimko/reana-job-controller/commit/872a9838336ed273cc4835d865e24d270e7936f2))
+* **markdownlint:** add Markdown linting ([#491](https://github.com/tiborsimko/reana-job-controller/issues/491)) ([3809916](https://github.com/tiborsimko/reana-job-controller/commit/380991695984d80ff1762f706ce18037a2c202f3))
+* **markdownlint:** less permissive global configuration ([#503](https://github.com/tiborsimko/reana-job-controller/issues/503)) ([fda1b31](https://github.com/tiborsimko/reana-job-controller/commit/fda1b31d7da7157e7b93c2f9620f32c046974401))
+* pin hadolint version ([8be1f3d](https://github.com/tiborsimko/reana-job-controller/commit/8be1f3d978c258c1cfa615e59192d99e37bed306))
+* **prettier:** add Prettier code formatting checks ([#491](https://github.com/tiborsimko/reana-job-controller/issues/491)) ([128ca8d](https://github.com/tiborsimko/reana-job-controller/commit/128ca8d5ddf2347aeb8f98929a6d380a3ef47b27))
+* publish docker image after new release ([6a2abcb](https://github.com/tiborsimko/reana-job-controller/commit/6a2abcbb90920786ab87496a037eab50a17a85a9))
+* **pytest:** invoke `pytest` directly instead of `setup.py test` ([#459](https://github.com/tiborsimko/reana-job-controller/issues/459)) ([637aaf1](https://github.com/tiborsimko/reana-job-controller/commit/637aaf197dc18e21bb412b7517c43e2d7b6f78d1))
+* **pytest:** move to PostgreSQL 14.10 ([#429](https://github.com/tiborsimko/reana-job-controller/issues/429)) ([42622fa](https://github.com/tiborsimko/reana-job-controller/commit/42622fa1597e49fae36c625941188be5a093eda9))
+* **release-please:** initial configuration ([#417](https://github.com/tiborsimko/reana-job-controller/issues/417)) ([fca6f74](https://github.com/tiborsimko/reana-job-controller/commit/fca6f74aa0d0e55e41d96b0e79c66a5cb3517189))
+* **release-please:** update version in Dockerfile/OpenAPI specs ([#421](https://github.com/tiborsimko/reana-job-controller/issues/421)) ([e6742f2](https://github.com/tiborsimko/reana-job-controller/commit/e6742f2911df46dfbef3b7e9104330d58e2b4211))
+* remove older versions from python tests ([5ee2872](https://github.com/tiborsimko/reana-job-controller/commit/5ee287219aca0bae00ad600bbd29dc2ac4bb04dc))
+* **run-tests:** add usage help and refactor options ([#503](https://github.com/tiborsimko/reana-job-controller/issues/503)) ([565e808](https://github.com/tiborsimko/reana-job-controller/commit/565e808c1be8a86517b88fecf2428f3cda799a32))
+* **run-tests:** fix macOS test workflow ([#515](https://github.com/tiborsimko/reana-job-controller/issues/515)) ([8afc0cb](https://github.com/tiborsimko/reana-job-controller/commit/8afc0cbd551a9b51d88457291d632b5ca51854f9))
+* **run-tests:** improve old DB container cleanup ([#514](https://github.com/tiborsimko/reana-job-controller/issues/514)) ([7d5657a](https://github.com/tiborsimko/reana-job-controller/commit/7d5657aef4abfc3d97062927469f238b9a6a95b7))
+* **runners:** upgrade CI runners to Ubuntu 22.04 ([#486](https://github.com/tiborsimko/reana-job-controller/issues/486)) ([1827c82](https://github.com/tiborsimko/reana-job-controller/commit/1827c8248793d1c08a9843904fccf04bb4fba30b))
+* **runners:** upgrade CI runners to Ubuntu 22.04 ([#486](https://github.com/tiborsimko/reana-job-controller/issues/486)) ([bfbbd7c](https://github.com/tiborsimko/reana-job-controller/commit/bfbbd7c63e12ca3f56cc13fd356c3db389af7bf7))
+* **shellcheck:** fix exit code propagation ([#425](https://github.com/tiborsimko/reana-job-controller/issues/425)) ([8e74a85](https://github.com/tiborsimko/reana-job-controller/commit/8e74a85c90df00c8734a6cdd81597f583d11d566))
+* **shfmt:** add shell script formatting checks ([#491](https://github.com/tiborsimko/reana-job-controller/issues/491)) ([65a7389](https://github.com/tiborsimko/reana-job-controller/commit/65a7389336e0865c8a827ce95aeedeec1c505b86))
+* update all actions ([2f3ede1](https://github.com/tiborsimko/reana-job-controller/commit/2f3ede1cf130b9b68f71c1c2ec740e8f040dcbf0))
+* **yamllint:** add YAML linting ([#489](https://github.com/tiborsimko/reana-job-controller/issues/489)) ([112afe5](https://github.com/tiborsimko/reana-job-controller/commit/112afe5812b0d6b570ef5bfda532769fb4863f6d)), closes [#488](https://github.com/tiborsimko/reana-job-controller/issues/488)
+
+
+### Documentation
+
+* add .readthedocs.yaml to migrate to RTD v2 ([71fca96](https://github.com/tiborsimko/reana-job-controller/commit/71fca9648faf098a6fdd79d1534e0f973e1fa6a0))
+* addition of REST API documentation ([870668f](https://github.com/tiborsimko/reana-job-controller/commit/870668f2def8c574b7d7a5d294d09b58a921969e))
+* addition of Travis/Coveralls/RFTD/Waffle/Travis/License badges ([b31c9d8](https://github.com/tiborsimko/reana-job-controller/commit/b31c9d811bc9d532571c7d131ed9ed02d02196ad))
+* author ORCID links ([3c1d224](https://github.com/tiborsimko/reana-job-controller/commit/3c1d224fda215ffc7fcacc75fa56af0a26e89276))
+* **authors:** complete list of contributors ([#434](https://github.com/tiborsimko/reana-job-controller/issues/434)) ([b9f8364](https://github.com/tiborsimko/reana-job-controller/commit/b9f83647fa8fc337140da5c3f2814ea24a15c5d5))
+* autodoc_mock_imports for gssapi ([2fa5221](https://github.com/tiborsimko/reana-job-controller/commit/2fa52212fb744cec197a2c116da96cdb406c6645)), closes [#274](https://github.com/tiborsimko/reana-job-controller/issues/274)
+* better navigation and synced descriptions ([18b942f](https://github.com/tiborsimko/reana-job-controller/commit/18b942fc97a9bb3ef94e2c7f2c438fb1699ae10a))
+* better structure ([eada161](https://github.com/tiborsimko/reana-job-controller/commit/eada1613742e92cdd4e2e09febbacf9120caef2a))
+* change docs to comply with the new secrets cli format ([ac2292c](https://github.com/tiborsimko/reana-job-controller/commit/ac2292c06b3682cd539a4ea212ab5f13082b3ead))
+* fix "fork me on GitHub" ribbon ([d9c4532](https://github.com/tiborsimko/reana-job-controller/commit/d9c4532d61067df0447d18b0cce7b33f466ed976))
+* fix ReadTheDocs build ([9c0e67a](https://github.com/tiborsimko/reana-job-controller/commit/9c0e67a11d5efe01263c2dab2270a5a5843d3319))
+* fix rtfd build badge so it shows the real status ([07e403b](https://github.com/tiborsimko/reana-job-controller/commit/07e403b5b82494f8c9e9772faa132a8a5ba63fd1))
+* HTCondorCERN backend usage ([5d5d6cb](https://github.com/tiborsimko/reana-job-controller/commit/5d5d6cbbca838f32b2d81d4da612c332c6deebad))
+* improve documentation ([76ea1f3](https://github.com/tiborsimko/reana-job-controller/commit/76ea1f3d268b678d1ad425088a5cb0749f95b8c0))
+* improve sphinxcontrib-openapi rendering ([903830d](https://github.com/tiborsimko/reana-job-controller/commit/903830dd67bcf59797f099c38955df277d3c7384))
+* initial release ([930b7bd](https://github.com/tiborsimko/reana-job-controller/commit/930b7bd2fbf0feed4ff2f464e01e51143d5fec8c))
+* more copyright header messages ([53546a2](https://github.com/tiborsimko/reana-job-controller/commit/53546a24fa0c8430e4bd108b8c4fc67055399259))
+* more structured chapters ([f901df9](https://github.com/tiborsimko/reana-job-controller/commit/f901df93d1254dfbb1bf806b4468c6b4b0f2bd73))
+* new logo, panel verbiage and links ([347f218](https://github.com/tiborsimko/reana-job-controller/commit/347f218a64a9971b6c121cf41af3bc76a304d3c3))
+* pin sphinx to avoid build failure ([9d94384](https://github.com/tiborsimko/reana-job-controller/commit/9d943844ce7d643748594d23a98a5a4f49dafed0))
+* ReadTheDocs configuration ([3c073e4](https://github.com/tiborsimko/reana-job-controller/commit/3c073e4c25dcd70a603a8e47bf73df33121801a4))
+* remove reference to unused pykube ([2398903](https://github.com/tiborsimko/reana-job-controller/commit/23989030657d0bb6a419be110624d0964c49c3ca))
+* set default language to English ([a57cd83](https://github.com/tiborsimko/reana-job-controller/commit/a57cd83a219200fd766f96c07e0ef98dd18df865))
+* single-page RTFD outline ([1cb473b](https://github.com/tiborsimko/reana-job-controller/commit/1cb473b5c714fa9b6825299d1a933dbfb22cc6b6))
+* update changelog ([5ac0d25](https://github.com/tiborsimko/reana-job-controller/commit/5ac0d25ee128db8bbd51fe74f01ebfa11620a34e))
+* updating job manager class diagram ([9326218](https://github.com/tiborsimko/reana-job-controller/commit/932621811e0d16e85040288716826929872354cc))
+
+
+### Chores
+
+* **master:** release 0.95.0-alpha.1 ([74a32d8](https://github.com/tiborsimko/reana-job-controller/commit/74a32d80158c8629e0505a7650e16507f01331a5))
+
 ## [Unreleased](https://github.com/reanahub/reana-job-controller/compare/0.9.4...HEAD)
 
 ### Documentation
