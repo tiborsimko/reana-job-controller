@@ -52,6 +52,9 @@ def test_cern_image_configures_kerberos_credential_producer():
     assert "SEC_CREDENTIAL_PRODUCER = /usr/bin/batch_krb5_credential" in cern_config
     assert 'Authen::Krb5->can("cc_copy_creds")' in DOCKERFILE
     assert "perl -T -c /usr/bin/batch_krb5_credential" in DOCKERFILE
+    assert "rdns[[:space:]]*=[[:space:]]*false" in DOCKERFILE
+    assert "rdns[[:space:]]*=[[:space:]]*true" in DOCKERFILE
+    assert "/usr/share/ngbauth-submit/krb5.conf.no_rdns" in DOCKERFILE
 
 
 def test_cern_image_uses_managed_kerberos_configuration():

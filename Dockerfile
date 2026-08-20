@@ -130,6 +130,9 @@ COPY patches/Authen-Krb5-cc_copy_creds.patch /tmp/
 # fallback because the aarch64 packages are not available from stable yet.
 # One digest identifies the expected artefact in either repository. Fall back
 # only when stable is unavailable; a checksum mismatch must fail the build.
+# Kubernetes DNS keeps ngass.cern.ch as the forward canonical name. CERN's
+# Kerberos policy enables reverse DNS; align the producer's private profile so
+# its fallback lookup can discover the load-balanced ngauth service principal.
 # hadolint ignore=DL3008,DL4006
 RUN set -e; \
     if echo "$COMPUTE_BACKENDS" | grep -q "htcondorcern"; then \
@@ -177,6 +180,11 @@ RUN set -e; \
       fi; \
       cpio -idmv -D / < /myschedd.cpio; \
       cpio -idmv -D / < /ngbauth-submit.cpio; \
+      sed -i -E \
+        's/^[[:space:]]*rdns[[:space:]]*=[[:space:]]*false[[:space:]]*$/ rdns = true/' \
+        /usr/share/ngbauth-submit/krb5.conf.no_rdns; \
+      grep -Eq '^[[:space:]]*rdns[[:space:]]*=[[:space:]]*true[[:space:]]*$' \
+        /usr/share/ngbauth-submit/krb5.conf.no_rdns; \
       rm -rf "/tmp/Authen-Krb5-$AUTHEN_KRB5_VERSION"; \
       rm -f /tmp/Authen-Krb5.tar.gz /myschedd.rpm /myschedd.cpio /ngbauth-submit.rpm /ngbauth-submit.cpio; \
       apt-get remove -y gnupg2 wget rpm2cpio cpio cpanminus gcc make patch; \
