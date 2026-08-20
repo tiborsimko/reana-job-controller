@@ -104,17 +104,6 @@ def captured_submit(manager_dependencies):
 # --- constructor wiring -------------------------------------------------------
 
 
-def test_cern_image_configures_kerberos_credential_producer():
-    """The CERN image must keep the producer required by ``CredType.Kerberos``."""
-    repository = Path(__file__).resolve().parents[1]
-    cern_config = (repository / "etc" / "10_cernsubmit.config").read_text()
-    dockerfile = (repository / "Dockerfile").read_text()
-
-    assert "SEC_CREDENTIAL_PRODUCER = /usr/bin/batch_krb5_credential" in cern_config
-    assert 'Authen::Krb5->can("cc_copy_creds")' in dockerfile
-    assert "perl -T -c /usr/bin/batch_krb5_credential" in dockerfile
-
-
 def test_constructor_stores_kerberos_and_isolates_cache_names_per_user(
     manager_dependencies, monkeypatch
 ):

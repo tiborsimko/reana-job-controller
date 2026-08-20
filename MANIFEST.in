@@ -28,7 +28,6 @@ recursive-include docs *.txt
 recursive-include tests *.py
 recursive-include etc *.conf
 recursive-include etc *.config
-recursive-include etc *.crt
 recursive-include etc *.erb
 recursive-include etc *.pem
 recursive-include etc *.yaml
