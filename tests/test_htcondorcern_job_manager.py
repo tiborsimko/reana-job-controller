@@ -548,6 +548,38 @@ def test_promote_output_deletes_returned_kerberos_cache_before_other_output(
     assert not transfer_workspace.exists()
 
 
+def test_promote_output_detects_cache_named_after_execute_identity(
+    manager_dependencies, tmp_path, monkeypatch
+):
+    """Ccache magic must catch worker caches not named after ``CERN_USER``."""
+    monkeypatch.setenv("CERN_USER", "johndoe")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = htcondorcern_job_manager.HTCondorJobManagerCERN(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(workspace),
+        job_name="job",
+        kerberos=True,
+    )
+    transfer_workspace = Path(manager.file_transfer_workspace)
+    transfer_workspace.mkdir()
+    (transfer_workspace / "execute-user.cc").write_bytes(b"\x05\x04credential")
+    (transfer_workspace / "execute-user.cc.tmp").write_bytes(
+        b"\x05\x03temporary credential"
+    )
+    (transfer_workspace / "generated.cc").write_text("int main() { return 0; }")
+
+    manager.promote_output()
+
+    assert not (workspace / "execute-user.cc").exists()
+    assert not (workspace / "execute-user.cc.tmp").exists()
+    assert (workspace / "generated.cc").read_text() == "int main() { return 0; }"
+    assert not transfer_workspace.exists()
+
+
 def test_promote_output_fails_before_promotion_when_cache_cannot_be_deleted(
     manager_dependencies, tmp_path, monkeypatch
 ):

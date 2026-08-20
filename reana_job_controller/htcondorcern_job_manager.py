@@ -47,6 +47,7 @@ class HTCondorJobManagerCERN(JobManager):
         "snakemake": {".snakemake"},
         "yadage": {"_yadage"},
     }
+    KRB5_FILE_CACHE_SUFFIXES = (".cc", ".cc.tmp")
 
     MAX_NUM_RETRIES = 3
     """Maximum number of tries used for getting schedd, job submission and
@@ -560,7 +561,30 @@ class HTCondorJobManagerCERN(JobManager):
 
     def _remove_returned_kerberos_credentials(self):
         """Delete any worker credential cache before promoting job output."""
-        for filename in self.kerberos_cache_files:
+        cache_filenames = set(self.kerberos_cache_files)
+        if self.kerberos:
+            try:
+                with os.scandir(self.file_transfer_workspace) as entries:
+                    for entry in entries:
+                        if (
+                            entry.name not in self.input_file_signatures
+                            and entry.name.endswith(self.KRB5_FILE_CACHE_SUFFIXES)
+                            and entry.is_file(follow_symlinks=False)
+                            and self._has_kerberos_file_cache_magic(entry.path)
+                        ):
+                            if entry.name not in cache_filenames:
+                                logging.warning(
+                                    "Removing returned HTCondor Kerberos credential "
+                                    "cache with unexpected filename: %s",
+                                    entry.name,
+                                )
+                            cache_filenames.add(entry.name)
+            except OSError as exc:
+                raise RuntimeError(
+                    "Failed to inspect returned HTCondor Kerberos credential caches"
+                ) from exc
+
+        for filename in cache_filenames:
             cache_path = os.path.join(self.file_transfer_workspace, filename)
             try:
                 os.unlink(cache_path)
@@ -570,6 +594,13 @@ class HTCondorJobManagerCERN(JobManager):
                 raise RuntimeError(
                     "Failed to remove returned HTCondor Kerberos credential cache"
                 ) from exc
+
+    @staticmethod
+    def _has_kerberos_file_cache_magic(path):
+        """Return whether a file starts with the Kerberos ccache marker."""
+        with open(path, "rb") as cache_file:
+            magic = cache_file.read(2)
+        return len(magic) == 2 and magic[0] == 0x05 and 1 <= magic[1] <= 4
 
     def _get_input_files(self):
         """Get files and dirs from workflow space."""
@@ -709,6 +740,8 @@ singularity exec \\
     @retry(stop_max_attempt_number=MAX_NUM_RETRIES, wait_fixed=RETRY_WAIT_TIME)
     def _get_credd():
         """Find the HTCondor Credd associated with the configured schedd."""
+        # Each RJC process serves one workflow and CERN identity, so this
+        # thread-local client cannot be reused across workflow owners.
         credd = getattr(thread_local, "MONITOR_THREAD_CREDD", None)
         if credd is None:
             schedd_host = htcondor.param.get("SCHEDD_HOST")  # noqa: F821
