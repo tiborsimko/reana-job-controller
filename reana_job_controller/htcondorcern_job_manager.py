@@ -97,7 +97,9 @@ class HTCondorJobManagerCERN(JobManager):
         :type shared_file_system: bool
         :param job_name: Name of the job
         :type job_name: str
-        :unpacked_img: if unpacked_img should be used
+        :param kerberos: whether to forward Kerberos credentials to the job.
+        :type kerberos: bool
+        :param unpacked_img: if unpacked_img should be used
         :type unpacked_img: bool
         :param htcondor_max_runtime: Maximum runtime of a HTCondor job.
         :type htcondor_max_runtime: str
@@ -138,6 +140,7 @@ class HTCondorJobManagerCERN(JobManager):
         self.cvmfs_mounts = cvmfs_mounts
         self.shared_file_system = shared_file_system
         self.workflow = self._get_workflow()
+        self.kerberos = kerberos
         self.unpacked_img = unpacked_img
         self.htcondor_max_runtime = htcondor_max_runtime
         self.htcondor_accounting_group = htcondor_accounting_group
@@ -155,6 +158,19 @@ class HTCondorJobManagerCERN(JobManager):
         )
         self.input_file_signatures = {}
         self.input_symlinks = set()
+        self.internal_output_files = set(self.INTERNAL_OUTPUT_FILES)
+        cern_user = os.environ.get("CERN_USER")
+        self.kerberos_cache_files = set()
+        if self.kerberos and not cern_user:
+            raise RuntimeError(
+                "CERN_USER must be configured to forward Kerberos credentials"
+            )
+        if self.kerberos:
+            self.kerberos_cache_files = {
+                "{}.cc".format(cern_user),
+                "{}.cc.tmp".format(cern_user),
+            }
+            self.internal_output_files.update(self.kerberos_cache_files)
 
         # Import HTCondor only after initialising Kerberos. Importing the module
         # evaluates the ``myschedd.sh`` configuration, which requires a valid
@@ -230,6 +246,8 @@ class HTCondorJobManagerCERN(JobManager):
                 # submit host's architecture and operating system. The legacy
                 # raw-ClassAd submission did not add a Requirements expression.
                 submit_description["MY.Requirements"] = "True"
+            if self.kerberos:
+                submit_description["MY.SendCredential"] = "True"
             self._validate_submit_description(submit_description)
             submit = htcondor.Submit(submit_description)  # noqa: F821
             future = current_app.htcondor_executor.submit(self._submit, submit)
@@ -465,6 +483,7 @@ class HTCondorJobManagerCERN(JobManager):
                     self.file_transfer_workspace
                 )
             )
+        self._remove_returned_kerberos_credentials()
 
         for root, directories, files in os.walk(self.file_transfer_workspace):
             directories[:] = self._exclude_internal_workflow_paths(
@@ -503,7 +522,7 @@ class HTCondorJobManagerCERN(JobManager):
                     )
 
                 relative_path = os.path.relpath(source, self.file_transfer_workspace)
-                if relative_path in self.INTERNAL_OUTPUT_FILES:
+                if relative_path in self.internal_output_files:
                     continue
                 if self._was_input_symlink(relative_path):
                     self._verify_unchanged_input_symlink(relative_path, source)
@@ -539,6 +558,19 @@ class HTCondorJobManagerCERN(JobManager):
 
         self.cleanup_file_transfer()
 
+    def _remove_returned_kerberos_credentials(self):
+        """Delete any worker credential cache before promoting job output."""
+        for filename in self.kerberos_cache_files:
+            cache_path = os.path.join(self.file_transfer_workspace, filename)
+            try:
+                os.unlink(cache_path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise RuntimeError(
+                    "Failed to remove returned HTCondor Kerberos credential cache"
+                ) from exc
+
     def _get_input_files(self):
         """Get files and dirs from workflow space."""
         input_files = []
@@ -565,22 +597,66 @@ class HTCondorJobManagerCERN(JobManager):
                     os.path.join(self.workflow_workspace + "/" + "job_wrapper.sh"),
                 )
             else:
-                template = (
-                    "#!/bin/bash \n"
-                    "singularity exec "
-                    "--home $PWD:/srv "
-                    "--bind $PWD:/srv "
-                    "--bind /cvmfs "
-                    "--bind /eos "
-                    "{DOCKER_IMG} "
-                    "bash -c {CMD}".format(
-                        DOCKER_IMG=self.docker_img,
-                        CMD=shlex.quote(self._format_arguments() + " | bash"),
-                    )
+                docker_img = shlex.quote(self.docker_img)
+                command = shlex.quote(self._format_arguments() + " | bash")
+                if self.kerberos:
+                    template = """#!/bin/bash
+scratch_directory="${{_CONDOR_SCRATCH_DIR:-$PWD}}"
+scratch_directory="${{scratch_directory%/}}"
+
+case "${{KRB5CCNAME:-}}" in
+    FILE:*) kerberos_cache="${{KRB5CCNAME#FILE:}}" ;;
+    *)
+        printf '%s\\n' "HTCondor did not provide a FILE Kerberos cache." >&2
+        exit 1
+        ;;
+esac
+
+case "$kerberos_cache" in
+    "$scratch_directory"/*) ;;
+    *)
+        printf '%s\\n' "HTCondor Kerberos cache is outside the job scratch directory." >&2
+        exit 1
+        ;;
+esac
+
+if [ ! -r "$kerberos_cache" ]; then
+    printf '%s\\n' "HTCondor Kerberos cache is not readable." >&2
+    exit 1
+fi
+
+container_cache="/srv/${{kerberos_cache#"$scratch_directory"/}}"
+cleanup_kerberos_cache() {{
+    if ! rm -f -- "$kerberos_cache" "${{kerberos_cache}}.tmp"; then
+        printf '%s\\n' "Failed to remove HTCondor Kerberos cache." >&2
+    fi
+}}
+trap cleanup_kerberos_cache EXIT
+
+singularity exec \\
+    --home "$scratch_directory:/srv" \\
+    --bind "$scratch_directory:/srv" \\
+    --bind /cvmfs \\
+    --bind /eos \\
+    --env "KRB5CCNAME=FILE:$container_cache" \\
+    {docker_img} \\
+    bash -c {command}
+""".format(docker_img=docker_img, command=command)
+                else:
+                    template = """#!/bin/bash
+singularity exec \\
+    --home "$PWD:/srv" \\
+    --bind "$PWD:/srv" \\
+    --bind /cvmfs \\
+    --bind /eos \\
+    {docker_img} \\
+    bash -c {command}
+""".format(docker_img=docker_img, command=command)
+                wrapper_path = os.path.join(
+                    self.workflow_workspace, "job_singularity_wrapper.sh"
                 )
-                f = open("job_singularity_wrapper.sh", "w")
-                f.write(template)
-                f.close()
+                with open(wrapper_path, "w") as wrapper_file:
+                    wrapper_file.write(template)
         except Exception as e:
             logging.error(
                 "Failed to copy job wrapper file: {0}".format(e), exc_info=True
@@ -590,6 +666,9 @@ class HTCondorJobManagerCERN(JobManager):
     @retry(stop_max_attempt_number=MAX_NUM_RETRIES, wait_fixed=RETRY_WAIT_TIME)
     def _submit(self, submit):
         """Execute submission transaction."""
+        if self.kerberos:
+            credd = HTCondorJobManagerCERN._get_credd()
+            credd.add_user_cred(htcondor.CredType.Kerberos, None)  # noqa: F821
         schedd = HTCondorJobManagerCERN._get_schedd()
         logging.info("Submitting job - {}".format(submit))
         result = schedd.submit(submit, count=1, spool=True)
@@ -625,6 +704,29 @@ class HTCondorJobManagerCERN(JobManager):
             setattr(thread_local, "MONITOR_THREAD_SCHEDD", schedd)
         logging.info("Getting schedd: {}".format(thread_local.MONITOR_THREAD_SCHEDD))
         return thread_local.MONITOR_THREAD_SCHEDD
+
+    @staticmethod
+    @retry(stop_max_attempt_number=MAX_NUM_RETRIES, wait_fixed=RETRY_WAIT_TIME)
+    def _get_credd():
+        """Find the HTCondor Credd associated with the configured schedd."""
+        credd = getattr(thread_local, "MONITOR_THREAD_CREDD", None)
+        if credd is None:
+            schedd_host = htcondor.param.get("SCHEDD_HOST")  # noqa: F821
+            if not schedd_host:
+                raise RuntimeError("SCHEDD_HOST is not configured")
+
+            credd_location = htcondor.Collector().locate(  # noqa: F821
+                htcondor.DaemonType.Credd, schedd_host  # noqa: F821
+            )
+            if credd_location is None:
+                raise RuntimeError(
+                    "Unable to locate HTCondor Credd for schedd {}".format(schedd_host)
+                )
+
+            credd = htcondor.Credd(credd_location)  # noqa: F821
+            setattr(thread_local, "MONITOR_THREAD_CREDD", credd)
+        logging.info("Getting credd: {}".format(thread_local.MONITOR_THREAD_CREDD))
+        return thread_local.MONITOR_THREAD_CREDD
 
     @staticmethod
     def stop(backend_job_id):

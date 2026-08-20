@@ -10,6 +10,8 @@
 
 import logging
 import os
+import subprocess
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -102,6 +104,68 @@ def captured_submit(manager_dependencies):
 # --- constructor wiring -------------------------------------------------------
 
 
+def test_cern_image_configures_kerberos_credential_producer():
+    """The CERN image must keep the producer required by ``CredType.Kerberos``."""
+    repository = Path(__file__).resolve().parents[1]
+    cern_config = (repository / "etc" / "10_cernsubmit.config").read_text()
+    dockerfile = (repository / "Dockerfile").read_text()
+
+    assert "SEC_CREDENTIAL_PRODUCER = /usr/bin/batch_krb5_credential" in cern_config
+    assert 'Authen::Krb5->can("cc_copy_creds")' in dockerfile
+    assert "perl -T -c /usr/bin/batch_krb5_credential" in dockerfile
+
+
+def test_constructor_stores_kerberos_and_isolates_cache_names_per_user(
+    manager_dependencies, monkeypatch
+):
+    """Credential cache filtering must follow each manager's CERN identity."""
+    Manager = htcondorcern_job_manager.HTCondorJobManagerCERN
+    monkeypatch.setenv("CERN_USER", "alice")
+    alice_manager = Manager(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace="/data",
+        job_name="job",
+        kerberos=True,
+    )
+    monkeypatch.setenv("CERN_USER", "bob")
+    bob_manager = Manager(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace="/data",
+        job_name="job",
+    )
+
+    assert alice_manager.kerberos is True
+    assert alice_manager.kerberos_cache_files == {"alice.cc", "alice.cc.tmp"}
+    assert {"alice.cc", "alice.cc.tmp"} <= alice_manager.internal_output_files
+    assert bob_manager.kerberos is False
+    assert bob_manager.kerberos_cache_files == set()
+    assert "bob.cc" not in bob_manager.internal_output_files
+    assert "alice.cc" not in bob_manager.internal_output_files
+    assert "alice.cc" not in Manager.INTERNAL_OUTPUT_FILES
+
+
+def test_constructor_requires_cern_user_for_kerberos(manager_dependencies, monkeypatch):
+    """Credential forwarding must have a deterministic cache filename."""
+    monkeypatch.delenv("CERN_USER", raising=False)
+
+    with pytest.raises(RuntimeError, match="CERN_USER"):
+        htcondorcern_job_manager.HTCondorJobManagerCERN(
+            docker_img="img",
+            cmd="ls",
+            env_vars={},
+            workflow_uuid="uuid",
+            workflow_workspace="/data",
+            job_name="job",
+            kerberos=True,
+        )
+
+
 def test_constructor_stores_htcondor_request_attributes(manager_dependencies):
     """Constructor must store the four new HTCondor request attributes."""
     manager = htcondorcern_job_manager.HTCondorJobManagerCERN(
@@ -170,6 +234,24 @@ def test_execute_preserves_unpacked_image_submission(captured_submit):
     assert "arguments" not in submit.keys()
     assert "MY.DockerImage" not in submit.keys()
     assert "MY.WantDocker" not in submit.keys()
+
+
+@pytest.mark.parametrize("unpacked_img", [False, True])
+def test_execute_requests_kerberos_credential(
+    captured_submit, unpacked_img, monkeypatch
+):
+    """Every explicitly Kerberos-enabled HTCondor job must request its ticket."""
+    monkeypatch.setenv("CERN_USER", "johndoe")
+    submit = captured_submit(kerberos=True, unpacked_img=unpacked_img)
+
+    assert submit["MY.SendCredential"] == "True"
+
+
+def test_execute_omits_kerberos_credential_by_default(captured_submit):
+    """Jobs that did not opt in must not receive a Kerberos credential."""
+    submit = captured_submit()
+
+    assert "MY.SendCredential" not in submit.keys()
 
 
 def test_execute_sets_request_cpus_as_string(captured_submit):
@@ -436,6 +518,63 @@ def test_promote_output_ignores_returned_snakemake_engine_state(workspace_manage
     assert not os.path.exists(workspace_manager.file_transfer_workspace)
 
 
+def test_promote_output_deletes_returned_kerberos_cache_before_other_output(
+    manager_dependencies, tmp_path, monkeypatch
+):
+    """Worker caches must be removed before any user output is promoted."""
+    monkeypatch.setenv("CERN_USER", "johndoe")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = htcondorcern_job_manager.HTCondorJobManagerCERN(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(workspace),
+        job_name="job",
+        kerberos=True,
+    )
+    transfer_workspace = Path(manager.file_transfer_workspace)
+    transfer_workspace.mkdir()
+    for filename in manager.kerberos_cache_files:
+        (transfer_workspace / filename).write_text("credential")
+    (transfer_workspace / "result.txt").write_text("result")
+
+    manager.promote_output()
+
+    assert (workspace / "result.txt").read_text() == "result"
+    assert not (workspace / "johndoe.cc").exists()
+    assert not (workspace / "johndoe.cc.tmp").exists()
+    assert not transfer_workspace.exists()
+
+
+def test_promote_output_fails_before_promotion_when_cache_cannot_be_deleted(
+    manager_dependencies, tmp_path, monkeypatch
+):
+    """Do not continue promotion when a returned credential cannot be removed."""
+    monkeypatch.setenv("CERN_USER", "johndoe")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = htcondorcern_job_manager.HTCondorJobManagerCERN(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(workspace),
+        job_name="job",
+        kerberos=True,
+    )
+    transfer_workspace = Path(manager.file_transfer_workspace)
+    transfer_workspace.mkdir()
+    (transfer_workspace / "johndoe.cc").mkdir()
+    (transfer_workspace / "result.txt").write_text("result")
+
+    with pytest.raises(RuntimeError, match="Kerberos credential cache"):
+        manager.promote_output()
+
+    assert not (workspace / "result.txt").exists()
+
+
 def test_promote_output_moves_only_new_and_modified_files(workspace_manager):
     """Merge returned output without replacing unchanged input files."""
     workspace = workspace_manager.workflow_workspace
@@ -693,6 +832,119 @@ def test_promote_output_detects_replaced_file_with_preserved_metadata(
         assert result_file.read() == "local!"
 
 
+# --- Singularity wrapper -----------------------------------------------------
+
+
+def test_kerberos_singularity_wrapper_maps_and_removes_worker_cache(
+    manager_dependencies, tmp_path, monkeypatch
+):
+    """The wrapper must expose the live cache in ``/srv`` and clean it up."""
+    monkeypatch.setenv("CERN_USER", "johndoe")
+    workspace = tmp_path / "scratch directory"
+    workspace.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    arguments_file = tmp_path / "singularity-arguments"
+    fake_singularity = fake_bin / "singularity"
+    fake_singularity.write_text(
+        "#!/bin/bash\n" 'printf \'%s\\0\' "$@" > "$SINGULARITY_ARGUMENTS_FILE"\n'
+    )
+    fake_singularity.chmod(0o755)
+
+    image = "registry.example/image name; touch wrapper-injection"
+    manager = htcondorcern_job_manager.HTCondorJobManagerCERN(
+        docker_img=image,
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(workspace),
+        job_name="job",
+        kerberos=True,
+        unpacked_img=True,
+    )
+    with mock.patch.object(manager, "_format_arguments", return_value="printf payload"):
+        manager._copy_wrapper_file()
+
+    cache = workspace / "johndoe.cc"
+    cache.write_text("credential")
+    cache_tmp = workspace / "johndoe.cc.tmp"
+    cache_tmp.write_text("temporary credential")
+    wrapper = workspace / "job_singularity_wrapper.sh"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": "{}{}{}".format(fake_bin, os.pathsep, environment["PATH"]),
+            "_CONDOR_SCRATCH_DIR": str(workspace),
+            "KRB5CCNAME": "FILE:{}".format(cache),
+            "SINGULARITY_ARGUMENTS_FILE": str(arguments_file),
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", str(wrapper)],
+        cwd=workspace,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    arguments = arguments_file.read_bytes().decode().split("\0")[:-1]
+    assert arguments[arguments.index("--home") + 1] == "{}:/srv".format(workspace)
+    assert arguments[arguments.index("--env") + 1] == (
+        "KRB5CCNAME=FILE:/srv/johndoe.cc"
+    )
+    assert image in arguments
+    assert arguments[-3:] == ["bash", "-c", "printf payload | bash"]
+    assert not (workspace / "wrapper-injection").exists()
+    assert not cache.exists()
+    assert not cache_tmp.exists()
+
+
+def test_kerberos_singularity_wrapper_rejects_cache_outside_scratch(
+    manager_dependencies, tmp_path, monkeypatch
+):
+    """A cache outside HTCondor's scratch directory must not be mounted."""
+    monkeypatch.setenv("CERN_USER", "johndoe")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside_cache = tmp_path / "johndoe.cc"
+    outside_cache.write_text("credential")
+    manager = htcondorcern_job_manager.HTCondorJobManagerCERN(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(workspace),
+        job_name="job",
+        kerberos=True,
+        unpacked_img=True,
+    )
+    with mock.patch.object(manager, "_format_arguments", return_value="true"):
+        manager._copy_wrapper_file()
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "_CONDOR_SCRATCH_DIR": str(workspace),
+            "KRB5CCNAME": "FILE:{}".format(outside_cache),
+        }
+    )
+    result = subprocess.run(
+        ["bash", str(workspace / "job_singularity_wrapper.sh")],
+        cwd=workspace,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "outside the job scratch directory" in result.stderr
+    assert outside_cache.exists()
+
+
 # --- schedd interactions ------------------------------------------------------
 
 
@@ -750,6 +1002,60 @@ def test_get_schedd_does_not_fall_back_to_local_daemon():
     mock_htcondor.Schedd.assert_not_called()
 
 
+def test_get_credd_locates_daemon_for_configured_remote_schedd():
+    """Credential upload must target the Credd paired with ``SCHEDD_HOST``."""
+    Manager = htcondorcern_job_manager.HTCondorJobManagerCERN
+    schedd_host = "bigbird23.cern.ch"
+    credd_location = mock.sentinel.credd_location
+    credd = mock.sentinel.credd
+    collector = mock.MagicMock()
+    collector.locate.return_value = credd_location
+    mock_htcondor = mock.MagicMock()
+    mock_htcondor.param = {"SCHEDD_HOST": schedd_host}
+    mock_htcondor.Collector.return_value = collector
+    mock_htcondor.Credd.return_value = credd
+
+    with mock.patch.object(
+        htcondorcern_job_manager, "htcondor", mock_htcondor
+    ), mock.patch.object(
+        htcondorcern_job_manager.thread_local,
+        "MONITOR_THREAD_CREDD",
+        None,
+        create=True,
+    ):
+        assert Manager._get_credd() is credd
+        assert Manager._get_credd() is credd
+
+    collector.locate.assert_called_once_with(
+        mock_htcondor.DaemonType.Credd, schedd_host
+    )
+    mock_htcondor.Credd.assert_called_once_with(credd_location)
+
+
+def test_get_credd_does_not_fall_back_to_local_daemon():
+    """A missing remote Credd must fail instead of using the local default."""
+    Manager = htcondorcern_job_manager.HTCondorJobManagerCERN
+    collector = mock.MagicMock()
+    collector.locate.return_value = None
+    mock_htcondor = mock.MagicMock()
+    mock_htcondor.param = {"SCHEDD_HOST": "missing.cern.ch"}
+    mock_htcondor.Collector.return_value = collector
+
+    with mock.patch.object(
+        htcondorcern_job_manager, "htcondor", mock_htcondor
+    ), mock.patch.object(
+        htcondorcern_job_manager.thread_local,
+        "MONITOR_THREAD_CREDD",
+        None,
+        create=True,
+    ), pytest.raises(
+        RuntimeError, match="missing.cern.ch"
+    ):
+        Manager._get_credd.__wrapped__()
+
+    mock_htcondor.Credd.assert_not_called()
+
+
 def test_submit_spools_submit_result_and_returns_cluster(manager):
     """A spooled v2 submission returns the cluster from SubmitResult."""
     submit = htcondor.Submit({"executable": "/bin/true"})
@@ -761,11 +1067,62 @@ def test_submit_spools_submit_result_and_returns_cluster(manager):
 
     with mock.patch.object(
         Manager, "_get_schedd", return_value=schedd
-    ), mock.patch.object(Manager, "_spool_input") as spool_input:
+    ), mock.patch.object(Manager, "_get_credd") as get_credd, mock.patch.object(
+        Manager, "_spool_input"
+    ) as spool_input:
         assert manager._submit(submit) == 123
 
+    get_credd.assert_not_called()
     schedd.submit.assert_called_once_with(submit, count=1, spool=True)
     spool_input.assert_called_once_with(result)
+
+
+def test_submit_uploads_kerberos_credential_before_submission(manager):
+    """Kerberos jobs must refresh the authenticated user's credential first."""
+    manager.kerberos = True
+    submit = htcondor.Submit({"executable": "/bin/true"})
+    result = mock.MagicMock()
+    result.cluster.return_value = 123
+    credd = mock.MagicMock()
+    schedd = mock.MagicMock()
+    schedd.submit.return_value = result
+    interactions = mock.Mock()
+    interactions.attach_mock(credd.add_user_cred, "add_user_cred")
+    interactions.attach_mock(schedd.submit, "submit")
+    Manager = htcondorcern_job_manager.HTCondorJobManagerCERN
+
+    with mock.patch.object(
+        Manager, "_get_credd", return_value=credd
+    ), mock.patch.object(
+        Manager, "_get_schedd", return_value=schedd
+    ), mock.patch.object(
+        Manager, "_spool_input"
+    ):
+        assert manager._submit(submit) == 123
+
+    credd.add_user_cred.assert_called_once_with(htcondor.CredType.Kerberos, None)
+    assert interactions.method_calls[:2] == [
+        mock.call.add_user_cred(htcondor.CredType.Kerberos, None),
+        mock.call.submit(submit, count=1, spool=True),
+    ]
+
+
+def test_submit_stops_before_schedd_when_credential_upload_fails(manager):
+    """Do not create a job that requested a credential we could not upload."""
+    manager.kerberos = True
+    submit = htcondor.Submit({"executable": "/bin/true"})
+    credd = mock.MagicMock()
+    credd.add_user_cred.side_effect = RuntimeError("credential upload failed")
+    Manager = htcondorcern_job_manager.HTCondorJobManagerCERN
+
+    with mock.patch.object(
+        Manager, "_get_credd", return_value=credd
+    ), mock.patch.object(Manager, "_get_schedd") as get_schedd, pytest.raises(
+        RuntimeError, match="credential upload failed"
+    ):
+        Manager._submit.__wrapped__(manager, submit)
+
+    get_schedd.assert_not_called()
 
 
 def test_spool_input_passes_submit_result_to_schedd():
