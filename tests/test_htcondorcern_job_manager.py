@@ -8,6 +8,7 @@
 
 """Tests for the CERN HTCondor job manager."""
 
+import base64
 import logging
 import os
 import subprocess
@@ -18,6 +19,10 @@ import pytest
 
 classad = pytest.importorskip("classad2")
 htcondor = pytest.importorskip("htcondor2")
+
+# ``htcondor2.Submit.jobs()`` is not implemented in HTCondor 24.12. Expand
+# ClassAds through the v1 bindings, which wrap the same C++ ``SubmitHash``.
+import htcondor as legacy_htcondor  # noqa: E402
 
 from reana_job_controller import htcondorcern_job_manager  # noqa: E402
 from reana_job_controller import job_monitor  # noqa: E402
@@ -73,8 +78,6 @@ def captured_submit(manager_dependencies):
     with mock.patch.object(
         htcondorcern_job_manager, "current_app", fake_app
     ), mock.patch.object(htcondorcern_job_manager.os, "chdir"), mock.patch.object(
-        Manager, "_format_arguments", return_value="echo|base64 -d"
-    ), mock.patch.object(
         Manager, "_prepare_file_transfer", return_value=""
     ), mock.patch.object(
         Manager, "before_execution"
@@ -84,6 +87,9 @@ def captured_submit(manager_dependencies):
 
         def build_and_execute(**kwargs):
             captured.clear()
+            formatted_arguments = kwargs.pop(
+                "formatted_arguments", "echo payload|base64 -d"
+            )
             base = dict(
                 docker_img="img",
                 cmd="ls",
@@ -95,7 +101,10 @@ def captured_submit(manager_dependencies):
             )
             base.update(kwargs)
             manager = Manager(**base)
-            manager.execute()
+            with mock.patch.object(
+                Manager, "_format_arguments", return_value=formatted_arguments
+            ):
+                manager.execute()
             return captured["submit"]
 
         yield build_and_execute
@@ -202,7 +211,14 @@ def test_execute_builds_v2_submit_description(captured_submit):
 
     assert isinstance(submit, htcondor.Submit)
     assert submit["description"] == "wf_job"
-    assert submit["executable"] == "/data/job_wrapper.sh"
+    assert submit["shell"] == (
+        'cd "${_CONDOR_JOB_IWD:?_CONDOR_JOB_IWD is not set}" && '
+        'exec /bin/bash "$_CONDOR_JOB_IWD/job_wrapper.sh" '
+        "echo 'payload|base64' -d"
+    )
+    assert "executable" not in submit.keys()
+    assert "arguments" not in submit.keys()
+    assert submit["docker_override_entrypoint"] == "False"
     assert submit["initialdir"].startswith("/data/reana_job.")
     assert submit["initialdir"].endswith(".filetransfer")
     assert submit["MY.JobMaxRetries"] == "3"
@@ -213,6 +229,99 @@ def test_execute_builds_v2_submit_description(captured_submit):
     assert submit["MY.Requirements"] == "True"
     assert "log" not in submit.keys()
     assert all(isinstance(value, str) for value in submit.values())
+
+
+def test_execute_docker_shell_materializes_expected_classad(captured_submit):
+    """HTCondor must turn ``shell`` into an untransferred ``/bin/sh``."""
+    submit = captured_submit()
+    expanded_submit = legacy_htcondor.Submit(
+        {
+            "shell": submit["shell"],
+            "docker_override_entrypoint": submit["docker_override_entrypoint"],
+        }
+    )
+
+    job_ad = next(iter(expanded_submit.jobs(count=1)))
+
+    assert job_ad["Cmd"] == "/bin/sh"
+    assert job_ad["TransferExecutable"] is False
+    assert job_ad["DockerOverrideEntrypoint"] is False
+
+
+def test_execute_docker_shell_restores_scratch_directory(captured_submit, tmp_path):
+    """A changed directory and non-executable wrapper must not break a job."""
+    submit = captured_submit()
+    scratch_directory = tmp_path / "scratch"
+    entrypoint_directory = tmp_path / "entrypoint-workdir"
+    scratch_directory.mkdir()
+    entrypoint_directory.mkdir()
+
+    wrapper = scratch_directory / "job_wrapper.sh"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n\' "$PWD" "$#" "$1" "$2" "$3" '
+        '>"$_CONDOR_JOB_IWD/execution.txt"\n'
+    )
+    wrapper.chmod(0o644)
+    entrypoint = tmp_path / "entrypoint.sh"
+    entrypoint.write_text("#!/bin/sh\n" 'cd "$ENTRYPOINT_WORKDIR"\n' 'exec "$@"\n')
+    entrypoint.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "ENTRYPOINT_WORKDIR": str(entrypoint_directory),
+            "_CONDOR_JOB_IWD": str(scratch_directory),
+        }
+    )
+
+    subprocess.run(
+        [str(entrypoint), "/bin/sh", "-c", submit["shell"]],
+        check=True,
+        env=environment,
+    )
+
+    assert (scratch_directory / "execution.txt").read_text().splitlines() == [
+        str(scratch_directory),
+        "3",
+        "echo",
+        "payload|base64",
+        "-d",
+    ]
+
+
+def test_execute_docker_shell_runs_real_wrapper(captured_submit, tmp_path):
+    """The trampoline must execute the shipped wrapper without an execute bit."""
+    payload = "printf 'hello-from-job\\n' > result.txt"
+    encoded_payload = base64.b64encode(payload.encode()).decode()
+    submit = captured_submit(
+        formatted_arguments="echo {}|base64 -d".format(encoded_payload)
+    )
+    scratch_directory = tmp_path / "scratch"
+    entrypoint_directory = tmp_path / "entrypoint-workdir"
+    scratch_directory.mkdir()
+    entrypoint_directory.mkdir()
+    wrapper = scratch_directory / "job_wrapper.sh"
+    wrapper_source = Path(__file__).resolve().parent.parent / "etc" / "job_wrapper.sh"
+    wrapper.write_text(wrapper_source.read_text())
+    wrapper.chmod(0o644)
+    entrypoint = tmp_path / "entrypoint.sh"
+    entrypoint.write_text("#!/bin/sh\n" 'cd "$ENTRYPOINT_WORKDIR"\n' 'exec "$@"\n')
+    entrypoint.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "ENTRYPOINT_WORKDIR": str(entrypoint_directory),
+            "_CONDOR_JOB_IWD": str(scratch_directory),
+        }
+    )
+
+    subprocess.run(
+        [str(entrypoint), "/bin/sh", "-c", submit["shell"]],
+        check=True,
+        env=environment,
+    )
+
+    assert (scratch_directory / "result.txt").read_text() == "hello-from-job\n"
 
 
 def test_execute_preserves_unpacked_image_submission(captured_submit):

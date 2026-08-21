@@ -198,7 +198,6 @@ class HTCondorJobManagerCERN(JobManager):
                     "(StageOutFinish == 0))"
                 ),
                 "initialdir": self.file_transfer_workspace,
-                "executable": os.path.join(self.workflow_workspace, executable_name),
                 "environment": self._format_env_vars(),
                 "output": "reana_job.$(ClusterId).$(ProcId).out",
                 "error": "reana_job.$(ClusterId).$(ProcId).err",
@@ -209,13 +208,26 @@ class HTCondorJobManagerCERN(JobManager):
                 "periodic_release": "(HoldReasonCode == 35)",
             }
             if not self.unpacked_img:
-                submit_description["arguments"] = self._format_arguments()
+                arguments = shlex.join(shlex.split(self._format_arguments()))
+                submit_description["shell"] = (
+                    'cd "${{_CONDOR_JOB_IWD:?_CONDOR_JOB_IWD is not set}}" && '
+                    'exec /bin/bash "$_CONDOR_JOB_IWD/{0}" {1}'.format(
+                        executable_name, arguments
+                    )
+                )
+                # Keep image initialisation enabled explicitly. False is the
+                # HTCondor default, but it is part of REANA's intended contract.
+                submit_description["docker_override_entrypoint"] = "False"
                 # Keep CERN's existing legacy Docker job attributes. Using the
                 # ``docker_image`` submit command would implicitly migrate these
                 # jobs to HTCondor's Container Universe.
                 submit_description["MY.DockerImage"] = classad.quote(self.docker_img)
                 submit_description["MY.WantDocker"] = "True"
                 submit_description["MY.DockerNetworkType"] = classad.quote("host")
+            else:
+                submit_description["executable"] = os.path.join(
+                    self.workflow_workspace, executable_name
+                )
             if self.htcondor_max_runtime in HTCONDOR_JOB_FLAVOURS.keys():
                 submit_description["MY.JobFlavour"] = classad.quote(
                     self.htcondor_max_runtime
