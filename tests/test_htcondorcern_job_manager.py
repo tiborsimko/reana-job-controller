@@ -12,6 +12,8 @@ import base64
 import logging
 import os
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -56,11 +58,23 @@ def manager(manager_dependencies):
 
 
 @pytest.fixture
+def installed_docker_wrapper(monkeypatch):
+    """Make the shipped Docker wrapper available as if it were installed."""
+    wrapper_source = Path(__file__).resolve().parent.parent / "etc" / "job_wrapper.sh"
+    monkeypatch.setattr(
+        htcondorcern_job_manager.HTCondorJobManagerCERN,
+        "DOCKER_WRAPPER_PATH",
+        str(wrapper_source),
+    )
+    return wrapper_source
+
+
+@pytest.fixture
 def captured_submit(manager_dependencies):
     """Patch ``execute()``'s side effects and capture the submit description.
 
-    Returns a builder ``submit(**kwargs)`` that constructs the manager
-    with the given kwargs, calls ``execute()``, and returns the
+    Returns a builder ``submit(**kwargs)`` that constructs the manager,
+    exposes it as ``submit.manager``, calls ``execute()``, and returns the
     ``htcondor2.Submit`` object that the manager would send to the schedd.
     """
     captured = {}
@@ -101,6 +115,7 @@ def captured_submit(manager_dependencies):
             )
             base.update(kwargs)
             manager = Manager(**base)
+            build_and_execute.manager = manager
             with mock.patch.object(
                 Manager, "_format_arguments", return_value=formatted_arguments
             ):
@@ -211,11 +226,14 @@ def test_execute_builds_v2_submit_description(captured_submit):
 
     assert isinstance(submit, htcondor.Submit)
     assert submit["description"] == "wf_job"
-    assert submit["shell"] == (
+    wrapper_filename = captured_submit.manager.wrapper_filename
+    expected_shell = (
         'cd "${_CONDOR_JOB_IWD:?_CONDOR_JOB_IWD is not set}" && '
-        'exec /bin/bash "$_CONDOR_JOB_IWD/job_wrapper.sh" '
-        "echo 'payload|base64' -d"
+        'exec /bin/bash "$_CONDOR_JOB_IWD/'
+        + wrapper_filename
+        + "\" echo 'payload|base64' -d"
     )
+    assert submit["shell"] == expected_shell
     assert "executable" not in submit.keys()
     assert "arguments" not in submit.keys()
     assert submit["docker_override_entrypoint"] == "False"
@@ -256,7 +274,8 @@ def test_execute_docker_shell_restores_scratch_directory(captured_submit, tmp_pa
     scratch_directory.mkdir()
     entrypoint_directory.mkdir()
 
-    wrapper = scratch_directory / "job_wrapper.sh"
+    wrapper_filename = captured_submit.manager.wrapper_filename
+    wrapper = scratch_directory / wrapper_filename
     wrapper.write_text(
         "#!/bin/sh\n"
         'printf \'%s\\n\' "$PWD" "$#" "$1" "$2" "$3" '
@@ -300,7 +319,8 @@ def test_execute_docker_shell_runs_real_wrapper(captured_submit, tmp_path):
     entrypoint_directory = tmp_path / "entrypoint-workdir"
     scratch_directory.mkdir()
     entrypoint_directory.mkdir()
-    wrapper = scratch_directory / "job_wrapper.sh"
+    wrapper_filename = captured_submit.manager.wrapper_filename
+    wrapper = scratch_directory / wrapper_filename
     wrapper_source = Path(__file__).resolve().parent.parent / "etc" / "job_wrapper.sh"
     wrapper.write_text(wrapper_source.read_text())
     wrapper.chmod(0o644)
@@ -324,11 +344,245 @@ def test_execute_docker_shell_runs_real_wrapper(captured_submit, tmp_path):
     assert (scratch_directory / "result.txt").read_text() == "hello-from-job\n"
 
 
+def test_non_kerberos_docker_wrapper_is_copied_verbatim(
+    manager_dependencies, installed_docker_wrapper, tmp_path
+):
+    """Docker jobs without Kerberos must keep the shipped wrapper unchanged."""
+    manager = htcondorcern_job_manager.HTCondorJobManagerCERN(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(tmp_path),
+        job_name="job",
+    )
+    Path(manager.file_transfer_workspace).mkdir()
+    manager._copy_wrapper_file()
+
+    wrapper = Path(manager.wrapper_path)
+    assert wrapper.read_bytes() == installed_docker_wrapper.read_bytes()
+
+
+def test_kerberos_docker_wrapper_removes_cache_and_preserves_payload_status(
+    manager_dependencies, installed_docker_wrapper, tmp_path, monkeypatch
+):
+    """A Kerberos Docker wrapper must clean both caches without masking failure."""
+    monkeypatch.setenv("CERN_USER", "johndoe")
+    workspace = tmp_path / "scratch directory"
+    workspace.mkdir()
+    manager = htcondorcern_job_manager.HTCondorJobManagerCERN(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(workspace),
+        job_name="job",
+        kerberos=True,
+    )
+    Path(manager.file_transfer_workspace).mkdir()
+    manager._copy_wrapper_file()
+
+    cache = workspace / "johndoe.cc"
+    cache.write_text("credential")
+    cache_tmp = workspace / "johndoe.cc.tmp"
+    cache_tmp.write_text("temporary credential")
+    payload = base64.b64encode(b"exit 23").decode()
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "_CONDOR_SCRATCH_DIR": str(workspace),
+            "KRB5CCNAME": "FILE:{}".format(cache),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            manager.wrapper_path,
+            "echo",
+            "{}|base64".format(payload),
+            "-d",
+        ],
+        cwd=workspace,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 23
+    assert not cache.exists()
+    assert not cache_tmp.exists()
+
+
+def test_kerberos_docker_wrapper_keeps_cache_outside_scratch(
+    manager_dependencies, installed_docker_wrapper, tmp_path, monkeypatch
+):
+    """Cleanup must not remove a cache outside HTCondor's scratch directory."""
+    monkeypatch.setenv("CERN_USER", "johndoe")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside_cache = tmp_path / "johndoe.cc"
+    outside_cache.write_text("credential")
+    manager = htcondorcern_job_manager.HTCondorJobManagerCERN(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(workspace),
+        job_name="job",
+        kerberos=True,
+    )
+    Path(manager.file_transfer_workspace).mkdir()
+    manager._copy_wrapper_file()
+
+    payload = base64.b64encode(b"true").decode()
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "_CONDOR_SCRATCH_DIR": str(workspace),
+            "KRB5CCNAME": "FILE:{}".format(outside_cache),
+        }
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            manager.wrapper_path,
+            "echo",
+            "{}|base64".format(payload),
+            "-d",
+        ],
+        cwd=workspace,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "outside the job scratch directory" in result.stderr
+    assert outside_cache.exists()
+
+
+@pytest.mark.parametrize(
+    ("krb5ccname", "warning"),
+    [
+        (None, "did not provide KRB5CCNAME"),
+        ("DIR:/tmp/krb5cc", "is not a FILE cache"),
+    ],
+)
+def test_kerberos_docker_wrapper_warns_for_unusable_cache_configuration(
+    manager_dependencies,
+    installed_docker_wrapper,
+    tmp_path,
+    monkeypatch,
+    krb5ccname,
+    warning,
+):
+    """Missing and unsupported cache forms must warn without failing the job."""
+    monkeypatch.setenv("CERN_USER", "johndoe")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = htcondorcern_job_manager.HTCondorJobManagerCERN(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(workspace),
+        job_name="job",
+        kerberos=True,
+    )
+    Path(manager.file_transfer_workspace).mkdir()
+    manager._copy_wrapper_file()
+
+    payload = base64.b64encode(b"true").decode()
+    environment = os.environ.copy()
+    environment["_CONDOR_SCRATCH_DIR"] = str(workspace)
+    if krb5ccname is None:
+        environment.pop("KRB5CCNAME", None)
+    else:
+        environment["KRB5CCNAME"] = krb5ccname
+    result = subprocess.run(
+        [
+            "bash",
+            manager.wrapper_path,
+            "echo",
+            "{}|base64".format(payload),
+            "-d",
+        ],
+        cwd=workspace,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert warning in result.stderr
+
+
+def test_prepare_file_transfer_isolates_concurrent_docker_wrappers(
+    manager_dependencies, installed_docker_wrapper, tmp_path, monkeypatch
+):
+    """Concurrent jobs must prepare wrappers in independent staging paths."""
+    monkeypatch.setenv("CERN_USER", "johndoe")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    Manager = htcondorcern_job_manager.HTCondorJobManagerCERN
+    plain_manager = Manager(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(workspace),
+        job_name="plain-job",
+    )
+    kerberos_manager = Manager(
+        docker_img="img",
+        cmd="ls",
+        env_vars={},
+        workflow_uuid="uuid",
+        workflow_workspace=str(workspace),
+        job_name="kerberos-job",
+        kerberos=True,
+    )
+
+    barrier = threading.Barrier(2)
+    original_copy_wrapper = Manager._copy_wrapper_file
+
+    def copy_wrapper_concurrently(manager):
+        barrier.wait()
+        original_copy_wrapper(manager)
+
+    with mock.patch.object(
+        Manager, "_copy_wrapper_file", copy_wrapper_concurrently
+    ), ThreadPoolExecutor(max_workers=2) as executor:
+        plain_future = executor.submit(plain_manager._prepare_file_transfer)
+        kerberos_future = executor.submit(kerberos_manager._prepare_file_transfer)
+        plain_inputs = plain_future.result().split(",")
+        kerberos_inputs = kerberos_future.result().split(",")
+
+    assert plain_manager.wrapper_path != kerberos_manager.wrapper_path
+    assert plain_manager.wrapper_filename != kerberos_manager.wrapper_filename
+    assert plain_manager.job_id in plain_manager.wrapper_filename
+    assert kerberos_manager.job_id in kerberos_manager.wrapper_filename
+    assert plain_manager.wrapper_path in plain_inputs
+    assert kerberos_manager.wrapper_path in kerberos_inputs
+    assert Path(plain_manager.wrapper_path).read_bytes() == (
+        installed_docker_wrapper.read_bytes()
+    )
+    assert (
+        "trap cleanup_kerberos_cache EXIT"
+        in Path(kerberos_manager.wrapper_path).read_text()
+    )
+    assert not (workspace / "job_wrapper.sh").exists()
+
+
 def test_execute_preserves_unpacked_image_submission(captured_submit):
     """Unpacked images must keep using the generated Singularity wrapper."""
     submit = captured_submit(unpacked_img=True)
 
-    assert submit["executable"] == "/data/job_singularity_wrapper.sh"
+    assert submit["executable"] == captured_submit.manager.wrapper_path
     assert "arguments" not in submit.keys()
     assert "MY.DockerImage" not in submit.keys()
     assert "MY.WantDocker" not in submit.keys()
@@ -463,7 +717,7 @@ def test_prepare_file_transfer_uses_job_uuid_workspace(workspace_manager):
     ) as hash_file:
         input_files = workspace_manager._prepare_file_transfer()
 
-    assert input_files == input_path
+    assert input_files.split(",") == [input_path, workspace_manager.wrapper_path]
     assert workspace_manager.job_id in workspace_manager.file_transfer_workspace
     assert os.path.isdir(workspace_manager.file_transfer_workspace)
     assert workspace_manager.input_file_signatures["input.txt"]
@@ -502,6 +756,24 @@ def test_get_input_files_excludes_file_transfer_directories(workspace_manager):
     assert "reana_job.another-job.filetransfer" not in input_files
 
 
+@pytest.mark.parametrize("filename", ["job_wrapper.sh", "job_singularity_wrapper.sh"])
+def test_wrapper_filenames_remain_available_to_workflows(workspace_manager, filename):
+    """Per-job wrapper names must not reserve old workspace filenames."""
+    workspace_path = Path(workspace_manager.workflow_workspace) / filename
+    workspace_path.write_text("input")
+
+    with mock.patch.object(workspace_manager, "_copy_wrapper_file"):
+        input_files = workspace_manager._prepare_file_transfer().split(",")
+
+    assert str(workspace_path) in input_files
+    returned_path = Path(workspace_manager.file_transfer_workspace) / filename
+    returned_path.write_text("output")
+
+    workspace_manager.promote_output()
+
+    assert workspace_path.read_text() == "output"
+
+
 def test_prepare_file_transfer_excludes_yadage_engine_state(workspace_manager):
     """Do not transfer or snapshot Yadage's concurrently updated state."""
     workspace_manager.workflow.type_ = "yadage"
@@ -518,7 +790,7 @@ def test_prepare_file_transfer_excludes_yadage_engine_state(workspace_manager):
     with mock.patch.object(workspace_manager, "_copy_wrapper_file"):
         input_files = workspace_manager._prepare_file_transfer().split(",")
 
-    assert input_files == [code_directory]
+    assert input_files == [code_directory, workspace_manager.wrapper_path]
     assert not any(
         path == "_yadage" or path.startswith("_yadage/")
         for path in workspace_manager.input_file_signatures
@@ -541,7 +813,7 @@ def test_prepare_file_transfer_excludes_snakemake_engine_state(workspace_manager
     with mock.patch.object(workspace_manager, "_copy_wrapper_file"):
         input_files = workspace_manager._prepare_file_transfer().split(",")
 
-    assert input_files == [code_directory]
+    assert input_files == [code_directory, workspace_manager.wrapper_path]
     assert not any(
         path == ".snakemake" or path.startswith(".snakemake/")
         for path in workspace_manager.input_file_signatures
@@ -737,6 +1009,7 @@ def test_promote_output_moves_only_new_and_modified_files(workspace_manager):
         ".job.ad",
         ".machine.ad",
         "condor_exec.exe",
+        workspace_manager.wrapper_filename,
     ]:
         with open(os.path.join(transfer_workspace, filename), "w") as internal_file:
             internal_file.write("HTCondor internal file")
@@ -756,7 +1029,7 @@ def test_promote_output_moves_only_new_and_modified_files(workspace_manager):
         assert job_log.read() == "canonical job output"
     assert not os.path.exists(os.path.join(workspace, "_condor_stdout"))
     assert not os.path.exists(os.path.join(workspace, "_condor_stderr"))
-    for filename in workspace_manager.INTERNAL_OUTPUT_FILES:
+    for filename in workspace_manager.internal_output_files:
         assert not os.path.exists(os.path.join(workspace, filename))
     assert not os.path.exists(transfer_workspace)
 
@@ -992,6 +1265,7 @@ def test_kerberos_singularity_wrapper_maps_and_removes_worker_cache(
         kerberos=True,
         unpacked_img=True,
     )
+    Path(manager.file_transfer_workspace).mkdir()
     with mock.patch.object(manager, "_format_arguments", return_value="printf payload"):
         manager._copy_wrapper_file()
 
@@ -999,7 +1273,7 @@ def test_kerberos_singularity_wrapper_maps_and_removes_worker_cache(
     cache.write_text("credential")
     cache_tmp = workspace / "johndoe.cc.tmp"
     cache_tmp.write_text("temporary credential")
-    wrapper = workspace / "job_singularity_wrapper.sh"
+    wrapper = Path(manager.wrapper_path)
     environment = os.environ.copy()
     environment.update(
         {
@@ -1051,6 +1325,7 @@ def test_kerberos_singularity_wrapper_rejects_cache_outside_scratch(
         kerberos=True,
         unpacked_img=True,
     )
+    Path(manager.file_transfer_workspace).mkdir()
     with mock.patch.object(manager, "_format_arguments", return_value="true"):
         manager._copy_wrapper_file()
 
@@ -1062,7 +1337,7 @@ def test_kerberos_singularity_wrapper_rejects_cache_outside_scratch(
         }
     )
     result = subprocess.run(
-        ["bash", str(workspace / "job_singularity_wrapper.sh")],
+        ["bash", manager.wrapper_path],
         cwd=workspace,
         env=environment,
         check=False,
